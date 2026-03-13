@@ -922,14 +922,16 @@ function buildGeometry(vsRefs, isRef, vertexStreams, indexStreams, vertexBuffers
 // ─── Inline Vdata/Idata Geometry Builder ─────────────────────────────────
 
 // Vdata format (Win32/360/XB1/PS4): [NumStreams, NumVertices, {VBRef, VBOffset, Stride}, ...]
-// Idata format: [IBRef, IBOffset (in indices), BaseVertexIndex, IndexCount]
+// Idata format: [IBRef, IBOffset, BaseVertexIndex, IndexCount]
+// IBOffset may be in index units (DI1) or bytes (DI3/ships); auto-detected via bounds check.
+// Raw IB indices include BaseVertexIndex; subtract it to get 0-based per-primitive indices.
 
-function buildGeometryFromInlineData(prim, vertexBuffers, indexBuffers) {
+function buildGeometryFromInlineData(prim, vertexBuffers, indexBuffers, ibOffsetIsBytes) {
   const { vdata, idata } = prim;
   if (!vdata || !idata || vdata.length < 2 || idata.length < 4) return null;
 
   const ibRef = idata[0];
-  const ibOffsetInIndices = idata[1];
+  const ibOffsetRaw = idata[1];
   const baseVertexIndex = idata[2];
   const indexCount = idata[3];
 
@@ -938,7 +940,9 @@ function buildGeometryFromInlineData(prim, vertexBuffers, indexBuffers) {
   if (!ib.data || indexCount === 0) return null;
 
   const ibDv = new DataView(ib.data.buffer, ib.data.byteOffset, ib.data.byteLength);
-  const ibByteOffset = ibOffsetInIndices * ib.width;
+  const ibByteOffset = (ibOffsetIsBytes && ibOffsetIsBytes.has(ibRef))
+    ? ibOffsetRaw
+    : ibOffsetRaw * ib.width;
   const indices = [];
   for (let i = 0; i < indexCount; i++) {
     const off = ibByteOffset + i * ib.width;
@@ -947,7 +951,7 @@ function buildGeometryFromInlineData(prim, vertexBuffers, indexBuffers) {
     if (ib.width === 4) idx = ibDv.getUint32(off, true);
     else if (ib.width === 2) idx = ibDv.getUint16(off, true);
     else idx = ibDv.getUint8(off);
-    indices.push(idx + baseVertexIndex);
+    indices.push(idx - baseVertexIndex);
   }
 
   const numStreams = vdata[0];
@@ -969,77 +973,148 @@ function buildGeometryFromInlineData(prim, vertexBuffers, indexBuffers) {
   let positions = null, normals = null, uvs = null;
   let rawBoneIndices = null, rawBoneWeights = null;
 
+  // Phase 1: Find position stream (float3 at offset 0) and read positions + UVs
+  // Both known vertex formats place float3 Position at offset 0 of one stream:
+  //   Format A (strides 24+16): Pos(12)+UV(4)+Bone(8) | Normal(8)+Tangent(8)
+  //   Format B (strides 16+24): Pos(12)+UV(4)         | Bone(8)+Normal(8)+Tangent(8)
+  let posStreamIdx = -1;
   for (let si = 0; si < streams.length; si++) {
     const stream = streams[si];
+    if (stream.stride < 12) continue;
     if (stream.vbRef < 0 || stream.vbRef >= vertexBuffers.length) continue;
     const vb = vertexBuffers[stream.vbRef];
     if (!vb.data) continue;
     const vbDv = new DataView(vb.data.buffer, vb.data.byteOffset, vb.data.byteLength);
 
-    if (stream.stride >= 12 && !positions) {
-      positions = new Float32Array(numVertices * 3);
+    positions = new Float32Array(numVertices * 3);
+    for (let v = 0; v < numVertices; v++) {
+      const off = stream.vbOffset + v * stream.stride;
+      if (off + 12 > vb.data.byteLength) break;
+      positions[v * 3]     = vbDv.getFloat32(off, true);
+      positions[v * 3 + 1] = vbDv.getFloat32(off + 4, true);
+      positions[v * 3 + 2] = vbDv.getFloat32(off + 8, true);
+    }
+
+    if (stream.stride >= 16) {
+      uvs = new Float32Array(numVertices * 2);
       for (let v = 0; v < numVertices; v++) {
-        const off = stream.vbOffset + v * stream.stride;
-        if (off + 12 > vb.data.byteLength) break;
-        positions[v * 3]     = vbDv.getFloat32(off, true);
-        positions[v * 3 + 1] = vbDv.getFloat32(off + 4, true);
-        positions[v * 3 + 2] = vbDv.getFloat32(off + 8, true);
+        const off = stream.vbOffset + v * stream.stride + 12;
+        if (off + 4 > vb.data.byteLength) break;
+        uvs[v * 2]     = decodeFloat16(vbDv.getUint16(off, true));
+        uvs[v * 2 + 1] = decodeFloat16(vbDv.getUint16(off + 2, true));
       }
+    }
+    posStreamIdx = si;
+    break;
+  }
 
-      if (stream.stride >= 16 && !uvs) {
-        uvs = new Float32Array(numVertices * 2);
+  // Phase 2: Find bone data by probing candidate locations with validation.
+  // Bone data = u8x4 indices + u8x4 weights; valid weights always sum to 255.
+  // Format A: bones at offset 16 in the position stream (stride >= 24)
+  // Format B: bones at offset 0 in a non-position stream (stride >= 8)
+  const boneCandidates = [];
+  if (posStreamIdx >= 0 && streams[posStreamIdx].stride >= 24) {
+    boneCandidates.push({ streamIdx: posStreamIdx, offset: 16 });
+  }
+  for (let si = 0; si < streams.length; si++) {
+    if (si === posStreamIdx) continue;
+    if (streams[si].stride >= 8) {
+      boneCandidates.push({ streamIdx: si, offset: 0 });
+    }
+  }
+
+  for (const cand of boneCandidates) {
+    const stream = streams[cand.streamIdx];
+    if (stream.vbRef < 0 || stream.vbRef >= vertexBuffers.length) continue;
+    const vb = vertexBuffers[stream.vbRef];
+    if (!vb.data || cand.offset + 8 > stream.stride) continue;
+
+    let validCount = 0;
+    const checkCount = Math.min(10, numVertices);
+    for (let v = 0; v < checkCount; v++) {
+      const off = stream.vbOffset + v * stream.stride + cand.offset + 4;
+      if (off + 4 > vb.data.byteLength) break;
+      const sum = vb.data[off] + vb.data[off + 1] + vb.data[off + 2] + vb.data[off + 3];
+      if (sum >= 254 && sum <= 256) validCount++;
+    }
+
+    if (validCount >= Math.min(checkCount, numVertices) * 0.8) {
+      rawBoneIndices = new Uint8Array(numVertices * 4);
+      rawBoneWeights = new Float32Array(numVertices * 4);
+      for (let v = 0; v < numVertices; v++) {
+        const off = stream.vbOffset + v * stream.stride + cand.offset;
+        if (off + 8 > vb.data.byteLength) break;
+        const bOff = v * 4;
+        rawBoneIndices[bOff]     = vb.data[off];
+        rawBoneIndices[bOff + 1] = vb.data[off + 1];
+        rawBoneIndices[bOff + 2] = vb.data[off + 2];
+        rawBoneIndices[bOff + 3] = vb.data[off + 3];
+        rawBoneWeights[bOff]     = vb.data[off + 4] / 255;
+        rawBoneWeights[bOff + 1] = vb.data[off + 5] / 255;
+        rawBoneWeights[bOff + 2] = vb.data[off + 6] / 255;
+        rawBoneWeights[bOff + 3] = vb.data[off + 7] / 255;
+      }
+      log(`  Bone data: stream ${cand.streamIdx} offset ${cand.offset} (${cand.offset === 0 ? 'format B: bone+normal+tangent' : 'format A: pos+uv+bone'})`);
+
+      // Format B: bones at offset 0, normals follow at offset 8 in the same stream
+      if (cand.streamIdx !== posStreamIdx && cand.offset === 0 && stream.stride >= 24) {
+        const vbDv = new DataView(vb.data.buffer, vb.data.byteOffset, vb.data.byteLength);
+        const tryNormals = new Float32Array(numVertices * 3);
+        let allValid = true;
         for (let v = 0; v < numVertices; v++) {
-          const off = stream.vbOffset + v * stream.stride + 12;
-          if (off + 4 > vb.data.byteLength) break;
-          uvs[v * 2]     = decodeFloat16(vbDv.getUint16(off, true));
-          uvs[v * 2 + 1] = decodeFloat16(vbDv.getUint16(off + 2, true));
+          const off = stream.vbOffset + v * stream.stride + 8;
+          if (off + 8 > vb.data.byteLength) { allValid = false; break; }
+          tryNormals[v * 3]     = decodeFloat16(vbDv.getUint16(off, true));
+          tryNormals[v * 3 + 1] = decodeFloat16(vbDv.getUint16(off + 2, true));
+          tryNormals[v * 3 + 2] = decodeFloat16(vbDv.getUint16(off + 4, true));
+        }
+        if (allValid && numVertices > 0) {
+          let sumLen = 0;
+          const cnt = Math.min(10, numVertices);
+          for (let v = 0; v < cnt; v++) {
+            const nx = tryNormals[v * 3], ny = tryNormals[v * 3 + 1], nz = tryNormals[v * 3 + 2];
+            sumLen += Math.sqrt(nx * nx + ny * ny + nz * nz);
+          }
+          if (sumLen / cnt >= 0.8 && sumLen / cnt <= 1.2) normals = tryNormals;
         }
       }
+      break;
+    }
+  }
 
-      // Stride 24: BoneIndex(U8_4) at offset 16, BoneWeight(U8_4_NORM) at offset 20
-      if (stream.stride >= 24 && !rawBoneIndices) {
-        rawBoneIndices = new Uint8Array(numVertices * 4);
-        rawBoneWeights = new Float32Array(numVertices * 4);
-        for (let v = 0; v < numVertices; v++) {
-          const off = stream.vbOffset + v * stream.stride + 16;
-          if (off + 8 > vb.data.byteLength) break;
-          const bOff = v * 4;
-          rawBoneIndices[bOff]     = vb.data[off];
-          rawBoneIndices[bOff + 1] = vb.data[off + 1];
-          rawBoneIndices[bOff + 2] = vb.data[off + 2];
-          rawBoneIndices[bOff + 3] = vb.data[off + 3];
-          rawBoneWeights[bOff]     = vb.data[off + 4] / 255;
-          rawBoneWeights[bOff + 1] = vb.data[off + 5] / 255;
-          rawBoneWeights[bOff + 2] = vb.data[off + 6] / 255;
-          rawBoneWeights[bOff + 3] = vb.data[off + 7] / 255;
-        }
-      }
-    } else if (stream.stride >= 8 && !normals) {
-      // Non-position stream: try Normal(FLOAT16_4) at offset 0
-      normals = new Float32Array(numVertices * 3);
+  // Phase 3: If normals still not found, try reading half4 from non-position streams at offset 0
+  if (!normals) {
+    for (let si = 0; si < streams.length; si++) {
+      if (si === posStreamIdx) continue;
+      const stream = streams[si];
+      if (stream.stride < 8) continue;
+      if (stream.vbRef < 0 || stream.vbRef >= vertexBuffers.length) continue;
+      const vb = vertexBuffers[stream.vbRef];
+      if (!vb.data) continue;
+      const vbDv = new DataView(vb.data.buffer, vb.data.byteOffset, vb.data.byteLength);
+
+      const tryNormals = new Float32Array(numVertices * 3);
       let allValid = true;
       for (let v = 0; v < numVertices; v++) {
         const off = stream.vbOffset + v * stream.stride;
         if (off + 8 > vb.data.byteLength) { allValid = false; break; }
-        const nx = decodeFloat16(vbDv.getUint16(off, true));
-        const ny = decodeFloat16(vbDv.getUint16(off + 2, true));
-        const nz = decodeFloat16(vbDv.getUint16(off + 4, true));
-        normals[v * 3]     = nx;
-        normals[v * 3 + 1] = ny;
-        normals[v * 3 + 2] = nz;
+        tryNormals[v * 3]     = decodeFloat16(vbDv.getUint16(off, true));
+        tryNormals[v * 3 + 1] = decodeFloat16(vbDv.getUint16(off + 2, true));
+        tryNormals[v * 3 + 2] = decodeFloat16(vbDv.getUint16(off + 4, true));
       }
-      // Validate: check if first few normals are roughly unit length
       if (allValid && numVertices > 0) {
         let sumLen = 0;
         const checkCount = Math.min(10, numVertices);
         for (let v = 0; v < checkCount; v++) {
-          const nx = normals[v*3], ny = normals[v*3+1], nz = normals[v*3+2];
-          sumLen += Math.sqrt(nx*nx + ny*ny + nz*nz);
+          const nx = tryNormals[v * 3], ny = tryNormals[v * 3 + 1], nz = tryNormals[v * 3 + 2];
+          sumLen += Math.sqrt(nx * nx + ny * ny + nz * nz);
         }
         const avgLen = sumLen / checkCount;
-        if (avgLen < 0.8 || avgLen > 1.2) {
+        if (avgLen >= 0.8 && avgLen <= 1.2) {
+          normals = tryNormals;
+          break;
+        } else {
           log(`  Normal validation failed (avg len=${avgLen.toFixed(3)}), will compute normals`, 'warn');
-          normals = null;
         }
       }
     }
@@ -1244,6 +1319,24 @@ function buildMeshes(root, companionFiles) {
   const geoNodes = sceneNodes.filter(n => n.type === 'Geometry' && n.primitives.length > 0);
   log(`Found ${geoNodes.length} geometry nodes with primitives`);
 
+  // Pre-scan: determine per-IB whether IBOffset is in index units or bytes.
+  // If any primitive's index-unit interpretation overflows, that IB uses byte offsets.
+  const ibOffsetIsBytes = new Set();
+  for (const node of geoNodes) {
+    for (const prim of node.primitives) {
+      if (!prim.idata || prim.idata.length < 4) continue;
+      const ibRef = prim.idata[0];
+      const ibOffsetRaw = prim.idata[1];
+      const indexCount = prim.idata[3];
+      if (ibRef < 0 || ibRef >= indexBuffers.length) continue;
+      const ib = indexBuffers[ibRef];
+      if (!ib.data) continue;
+      if (ibOffsetRaw * ib.width + indexCount * ib.width > ib.data.byteLength) {
+        ibOffsetIsBytes.add(ibRef);
+      }
+    }
+  }
+
   if (geoNodes.length > 0) {
     for (const node of geoNodes) {
       // Build skeleton once per geometry node, shared across its primitives
@@ -1265,7 +1358,7 @@ function buildMeshes(root, companionFiles) {
             prim.unitBase, prim.unitScale
           );
         } else if (prim.vdata && prim.idata) {
-          geo = buildGeometryFromInlineData(prim, vertexBuffers, indexBuffers);
+          geo = buildGeometryFromInlineData(prim, vertexBuffers, indexBuffers, ibOffsetIsBytes);
         }
 
         if (!geo) continue;
