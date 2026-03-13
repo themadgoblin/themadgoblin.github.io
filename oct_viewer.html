@@ -1,0 +1,2282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OCT File Viewer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#1a1a2e;color:#e0e0e0;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+header{background:#16213e;padding:12px 20px;border-bottom:1px solid #0f3460;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+header h1{font-size:18px;font-weight:600;color:#e94560;white-space:nowrap}
+.controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.file-group{display:flex;align-items:center;gap:6px}
+.file-group label{font-size:12px;color:#a0a0c0;white-space:nowrap}
+input[type="file"]{font-size:11px;max-width:180px;color:#e0e0e0}
+input[type="file"]::file-selector-button{background:#0f3460;color:#e0e0e0;border:1px solid #533483;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px}
+input[type="file"]::file-selector-button:hover{background:#533483}
+.cb-group{display:flex;align-items:center;gap:4px}
+.cb-group label{font-size:12px;color:#a0a0c0;cursor:pointer}
+input[type="checkbox"]{accent-color:#e94560;cursor:pointer}
+button{background:#e94560;color:#fff;border:none;border-radius:4px;padding:6px 18px;cursor:pointer;font-size:13px;font-weight:500;transition:background .2s}
+button:hover{background:#c73651}
+button:disabled{background:#555;cursor:not-allowed}
+button.toggle-on{background:#533483}
+button.toggle-on:hover{background:#6b44a0}
+button.color-only{background:#2d6a4f}
+button.color-only:hover{background:#40916c}
+.main{flex:1;display:flex;overflow:hidden}
+#viewport{flex:1;position:relative;background:#0a0a1a}
+#viewport canvas{display:block;width:100%!important;height:100%!important}
+#log-panel{width:320px;background:#16213e;border-left:1px solid #0f3460;display:flex;flex-direction:column;overflow:hidden}
+#log-panel h3{padding:10px 14px;font-size:13px;color:#e94560;border-bottom:1px solid #0f3460}
+#log{flex:1;overflow-y:auto;padding:8px 14px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px;line-height:1.6}
+#log .info{color:#6bc5d2}
+#log .warn{color:#f0c040}
+#log .error{color:#e94560}
+#log .success{color:#4ade80}
+#log .tex-prompt{background:#1e2d4a;border:1px solid #0f3460;border-radius:6px;padding:10px;margin:8px 0}
+#log .tex-prompt .tex-list{margin:6px 0;color:#a0a0c0;font-size:10px;line-height:1.8}
+#log .tex-prompt button{font-size:11px;padding:4px 12px;margin-top:4px}
+#log .tex-prompt input[type="file"]{display:none}
+#mesh-panel{border-bottom:1px solid #0f3460}
+#mesh-panel:has(#mesh-list:empty){display:none}
+#mesh-panel h3{padding:10px 14px;font-size:13px;color:#e94560;border-bottom:1px solid #0f3460}
+#mesh-list{max-height:180px;overflow-y:auto;padding:4px 0}
+#bone-panel{border-bottom:1px solid #0f3460}
+#bone-panel:has(#bone-list:empty){display:none}
+#bone-panel h3{padding:10px 14px;font-size:13px;color:#c084fc;border-bottom:1px solid #0f3460;display:flex;justify-content:space-between;align-items:center}
+#bone-panel h3 span{font-size:10px;color:#707090;font-weight:normal}
+#bone-list{max-height:200px;overflow-y:auto;padding:4px 0}
+.bone-row{display:flex;align-items:center;gap:8px;padding:3px 14px;font-size:11px;cursor:pointer;user-select:none;transition:background .15s}
+.bone-row:hover{background:#1e2d4a}
+.bone-row.selected{background:#2a1f4a}
+.bone-indent{flex-shrink:0;color:#404060;font-size:9px}
+.bone-icon{width:14px;height:14px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:#c084fc}
+.bone-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c0c0d0}
+.bone-row.selected .bone-name{color:#c084fc;font-weight:bold}
+.mesh-row{display:flex;align-items:center;gap:8px;padding:3px 14px;font-size:11px;cursor:pointer;user-select:none;transition:background .15s}
+.mesh-row:hover{background:#1e2d4a}
+.mesh-eye{width:18px;height:18px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;transition:opacity .15s}
+.mesh-eye.on{opacity:1}
+.mesh-eye.off{opacity:0.25}
+.mesh-color{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.mesh-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c0c0d0}
+.mesh-tris{color:#707090;font-size:10px;flex-shrink:0}
+.mesh-row.hidden-mesh .mesh-label{color:#606080;text-decoration:line-through}
+#stats-bar{background:#0f3460;padding:6px 20px;font-size:11px;color:#a0a0c0;display:flex;gap:20px;border-top:1px solid #533483}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>OCT Viewer</h1>
+  <div class="controls">
+    <div class="file-group">
+      <label>OCT:</label>
+      <input type="file" id="oct-file" accept=".oct">
+    </div>
+    <div class="file-group">
+      <label>Buffers:</label>
+      <input type="file" id="buf-files" accept=".vbuf,.ibuf,.mtb" multiple>
+    </div>
+    <div class="cb-group">
+      <input type="checkbox" id="load-textures" checked>
+      <label for="load-textures">Load Textures</label>
+    </div>
+    <button id="btn-load" disabled>Load</button>
+    <button id="btn-wireframe">Wireframe</button>
+    <button id="btn-skeleton">Skeleton</button>
+    <button id="btn-export-glb" disabled>Export GLB</button>
+    <button id="btn-export-obj" disabled>Export OBJ</button>
+  </div>
+</header>
+
+<div class="main">
+  <div id="viewport"></div>
+  <div id="log-panel">
+    <div id="mesh-panel">
+      <h3>Meshes</h3>
+      <div id="mesh-list"></div>
+    </div>
+    <div id="bone-panel">
+      <h3>Bones <span id="bone-count"></span></h3>
+      <div id="bone-list"></div>
+    </div>
+    <h3>Log</h3>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div id="stats-bar">
+  <span id="stat-verts">Vertices: 0</span>
+  <span id="stat-tris">Triangles: 0</span>
+  <span id="stat-meshes">Meshes: 0</span>
+  <span id="stat-mats">Materials: 0</span>
+  <span id="stat-bone" style="color:#c084fc;display:none"></span>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
+import { DDSLoader } from 'three/addons/loaders/DDSLoader.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+
+// ─── Logging ────────────────────────────────────────────────────────────────
+const logEl = document.getElementById('log');
+function log(msg, cls = 'info') {
+  const d = document.createElement('div');
+  d.className = cls;
+  d.textContent = msg;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ─── Three.js Setup ─────────────────────────────────────────────────────────
+const viewport = document.getElementById('viewport');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.setClearColor(0x0a0a1a);
+viewport.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 10000);
+camera.position.set(0, 2, 5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+scene.add(new THREE.AmbientLight(0x606080, 1.5));
+const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+dirLight.position.set(5, 10, 7);
+scene.add(dirLight);
+
+const gridHelper = new THREE.GridHelper(20, 20, 0x333355, 0x222244);
+scene.add(gridHelper);
+
+function resize() {
+  const w = viewport.clientWidth, h = viewport.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+let _boneUpdateFn = null;
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (_boneUpdateFn) _boneUpdateFn();
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ─── Vertex Format Table ────────────────────────────────────────────────────
+const VF_SIZES = [
+  4,8,12,16,4,4,8,8,16,16,4,4,8,8,16,16,
+  4,4,8,8,4,4,8,8,4,4,4,4,4,4,4,4,
+  4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,8,
+  3,4,6,4,4,0,2,1,8,16
+];
+
+function getVFSize(type) { return VF_SIZES[type] || 0; }
+
+function decodeFloat16(h) {
+  const s = (h >> 15) & 1, e = (h >> 10) & 0x1f, f = h & 0x3ff;
+  if (e === 0) return f === 0 ? (s ? -0 : 0) : (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+  if (e === 0x1f) return f ? NaN : (s ? -Infinity : Infinity);
+  return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
+}
+
+function signExtend(val, bits) {
+  const m = 1 << (bits - 1);
+  return (val ^ m) - m;
+}
+
+function decodeVertexElement(dv, off, type) {
+  switch (type) {
+    case 0: return [dv.getFloat32(off, true)];
+    case 1: return [dv.getFloat32(off, true), dv.getFloat32(off+4, true)];
+    case 2: return [dv.getFloat32(off, true), dv.getFloat32(off+4, true), dv.getFloat32(off+8, true)];
+    case 3: return [dv.getFloat32(off, true), dv.getFloat32(off+4, true), dv.getFloat32(off+8, true), dv.getFloat32(off+12, true)];
+    case 24: { // U8_4
+      const b = new Uint8Array(dv.buffer, dv.byteOffset + off, 4);
+      return [b[0], b[1], b[2], b[3]];
+    }
+    case 25: { // U8_4_NORMALIZED
+      const b = new Uint8Array(dv.buffer, dv.byteOffset + off, 4);
+      return [b[0]/255, b[1]/255, b[2]/255, b[3]/255];
+    }
+    case 30: case 31: // S10_10_10[_NORMALIZED]
+    case 34: case 35: case 36: { // S10_10_10_2[_NORMALIZED[_AS_UNORM]]
+      const v = dv.getUint32(off, true);
+      let x = signExtend(v & 0x3ff, 10) / 511;
+      let y = signExtend((v >> 10) & 0x3ff, 10) / 511;
+      let z = signExtend((v >> 20) & 0x3ff, 10) / 511;
+      return [x, y, z];
+    }
+    case 39: case 40: { // S11_11_10[_NORMALIZED]
+      const v = dv.getUint32(off, true);
+      let x = signExtend(v & 0x7ff, 11) / 1023;
+      let y = signExtend((v >> 11) & 0x7ff, 11) / 1023;
+      let z = signExtend((v >> 22) & 0x3ff, 10) / 511;
+      return [x, y, z];
+    }
+    case 46: { // FLOAT16_2
+      return [decodeFloat16(dv.getUint16(off, true)), decodeFloat16(dv.getUint16(off+2, true))];
+    }
+    case 47: { // FLOAT16_4
+      return [decodeFloat16(dv.getUint16(off, true)), decodeFloat16(dv.getUint16(off+2, true)),
+              decodeFloat16(dv.getUint16(off+4, true)), decodeFloat16(dv.getUint16(off+6, true))];
+    }
+    case 56: { // UNIT_16: 4 x int16
+      return [dv.getInt16(off, true), dv.getInt16(off+2, true), dv.getInt16(off+4, true), dv.getInt16(off+6, true)];
+    }
+    case 16: { // U16_2
+      return [dv.getUint16(off, true), dv.getUint16(off+2, true)];
+    }
+    case 17: { // U16_2_NORMALIZED
+      return [dv.getUint16(off, true) / 65535, dv.getUint16(off+2, true) / 65535];
+    }
+    case 54: { // U16_1
+      return [dv.getUint16(off, true)];
+    }
+    case 55: { // U8_1
+      return [dv.getUint8(off)];
+    }
+    case 4: { // U32_1
+      return [dv.getUint32(off, true)];
+    }
+    case 5: { // U32_1_NORMALIZED
+      return [dv.getUint32(off, true) / 4294967295];
+    }
+    case 48: { // S1_6_3 : 3 x int8 / 64
+      return [dv.getInt8(off)/64, dv.getInt8(off+1)/64, dv.getInt8(off+2)/64];
+    }
+    case 49: { // S1_6_4 : 4 x int8 / 64
+      return [dv.getInt8(off)/64, dv.getInt8(off+1)/64, dv.getInt8(off+2)/64, dv.getInt8(off+3)/64];
+    }
+    case 50: { // S3_12_3 : 3 x int16 / 4096
+      return [dv.getInt16(off,true)/4096, dv.getInt16(off+2,true)/4096, dv.getInt16(off+4,true)/4096];
+    }
+    case 51: { // S3_12_2 : 2 x int16 / 4096
+      return [dv.getInt16(off,true)/4096, dv.getInt16(off+2,true)/4096];
+    }
+    case 57: { // FLOAT4x4 - one row of matrix = 4 floats
+      return [dv.getFloat32(off,true), dv.getFloat32(off+4,true), dv.getFloat32(off+8,true), dv.getFloat32(off+12,true)];
+    }
+    default:
+      return [0];
+  }
+}
+
+// ─── OCT Binary Parser ─────────────────────────────────────────────────────
+
+const MAGIC_LE = 0x45017629;
+const MAGIC_BE = 0x29760145;
+
+function readPackedUint(dv, off, n) {
+  let v = 0;
+  for (let i = 0; i < n; i++) v |= dv.getUint8(off + i) << (8 * i);
+  return v >>> 0;
+}
+
+function readPackedInt(dv, off, n) {
+  let v = 0;
+  for (let i = 0; i < n; i++) v |= dv.getUint8(off + i) << (8 * i);
+  if (n < 4) {
+    const signBit = 1 << (n * 8 - 1);
+    if (v & signBit) v |= ~((1 << (n * 8)) - 1);
+  }
+  return v | 0; // ensure signed 32-bit
+}
+
+function parseOCT(buf) {
+  const dv = new DataView(buf);
+  const magic = dv.getUint32(0, true);
+  if (magic !== MAGIC_LE && magic !== MAGIC_BE) throw new Error(`Bad magic: 0x${magic.toString(16)}`);
+
+  const le = magic === MAGIC_LE;
+  const revNumber = dv.getFloat32(4, le);
+  const stringTableLength = dv.getInt32(0x0C, le);
+  const atomLength = dv.getInt32(0x10, le);
+  const totalAtoms = dv.getInt32(0x14, le);
+
+  log(`Header: rev=${revNumber.toFixed(1)}, strings=${stringTableLength}b, atoms=${totalAtoms}, atomData=${atomLength}b`);
+
+  // Parse string table
+  const stOff = 60;
+  const strings = [];
+  let s = '';
+  for (let i = 0; i < stringTableLength; i++) {
+    const c = dv.getUint8(stOff + i);
+    if (c === 0) { strings.push(s); s = ''; }
+    else s += String.fromCharCode(c);
+  }
+  const si = strings.length <= 65536 ? 2 : 4;
+  log(`String table: ${strings.length} strings, index size=${si}B`);
+
+  // Parse atoms
+  const atomOff = stOff + stringTableLength;
+  const atoms = [];
+  let pos = atomOff;
+
+  for (let a = 0; a < totalAtoms; a++) {
+    const flags = dv.getUint16(pos, le); pos += 2;
+    const atomType   = flags & 0x0003;
+    const hasName    = (flags >> 2) & 1;
+    const dataType   = (flags >> 3) & 7;
+    const lengthSize = (flags >> 6) & 3;
+    const extra      = (flags >> 8) & 3;
+    const parentIdx  = (flags >> 10) & 63;
+
+    const keyIdx = si === 2 ? dv.getUint16(pos, le) : dv.getUint32(pos, le); pos += si;
+    const key = strings[keyIdx] || '';
+    let name = null;
+    if (hasName) {
+      const ni = si === 2 ? dv.getUint16(pos, le) : dv.getUint32(pos, le); pos += si;
+      name = strings[ni] || '';
+    }
+
+    const atom = { atomType, dataType, key, name, parentIdx, children: [], value: null };
+
+    if (atomType === 1) {
+      // Aggregate: no payload
+    } else if (atomType === 3) {
+      // Scalar
+      if (dataType === 1) { // String
+        const vi = si === 2 ? dv.getUint16(pos, le) : dv.getUint32(pos, le); pos += si;
+        atom.value = strings[vi] || '';
+      } else if (dataType === 2) { // Float
+        atom.value = dv.getFloat32(pos, le); pos += 4;
+      } else if (dataType === 3) { // Int
+        const n = extra + 1;
+        atom.value = readPackedInt(dv, pos, n); pos += n;
+      } else if (dataType === 4) { // Binary
+        const lenBytes = lengthSize + 1;
+        const binLen = readPackedUint(dv, pos, lenBytes); pos += lenBytes;
+        if (extra) { pos += si; } // hint string
+        atom.value = new Uint8Array(buf, pos, binLen);
+        pos += binLen;
+      }
+    } else if (atomType === 2) {
+      // List
+      const lenBytes = lengthSize + 1;
+      const count = readPackedUint(dv, pos, lenBytes); pos += lenBytes;
+      if (dataType === 2) { // Float list
+        const arr = new Float32Array(count);
+        for (let i = 0; i < count; i++) { arr[i] = dv.getFloat32(pos, le); pos += 4; }
+        atom.value = arr;
+      } else if (dataType === 3) { // Int list
+        const elSize = extra + 1;
+        const arr = new Int32Array(count);
+        for (let i = 0; i < count; i++) { arr[i] = readPackedInt(dv, pos, elSize); pos += elSize; }
+        atom.value = arr;
+      } else if (dataType === 1) { // String list
+        const arr = [];
+        for (let i = 0; i < count; i++) {
+          const vi = si === 2 ? dv.getUint16(pos, le) : dv.getUint32(pos, le); pos += si;
+          arr.push(strings[vi] || '');
+        }
+        atom.value = arr;
+      }
+    }
+
+    atoms.push(atom);
+  }
+
+  log(`Parsed ${atoms.length} atoms`);
+
+  // Build tree using the same stack algorithm as ReadSerializer::BuildAtomHierarchy
+  if (atoms.length === 0) throw new Error('No atoms');
+  const root = atoms[0];
+  let cpid = root.parentIdx;
+  let cn = root;
+  const pidStack = [];
+  const nStack = [];
+
+  for (let i = 1; i < atoms.length; i++) {
+    const atom = atoms[i];
+    const cid = atom.parentIdx;
+
+    while (cid < cpid && pidStack.length > 0) {
+      cpid = pidStack.pop();
+      cn = nStack.pop();
+    }
+
+    if (cid > cpid) {
+      pidStack.push(cpid);
+      nStack.push(cn);
+      cn.children.push(atom);
+    } else {
+      // Sibling: add to the parent of cn (top of node stack)
+      if (nStack.length > 0) {
+        nStack[nStack.length - 1].children.push(atom);
+      } else {
+        root.children.push(atom);
+      }
+    }
+    cpid = cid;
+    cn = atom;
+  }
+
+  return root;
+}
+
+// ─── Pool Extraction ────────────────────────────────────────────────────────
+
+function findChildByKey(node, key) {
+  return node.children.find(c => c.key === key) || null;
+}
+function findChildrenByKey(node, key) {
+  return node.children.filter(c => c.key === key);
+}
+function getScalar(node, key) {
+  const c = findChildByKey(node, key);
+  return c ? c.value : undefined;
+}
+function getList(node, key) {
+  const c = findChildByKey(node, key);
+  return c ? c.value : undefined;
+}
+
+function extractPools(root) {
+  const pools = {};
+  for (const child of root.children) {
+    if (child.atomType === 1) { // aggregate
+      pools[child.key] = child;
+    }
+  }
+  return pools;
+}
+
+function getPoolEntries(poolNode) {
+  if (!poolNode) return [];
+  return poolNode.children.filter(c => c.atomType === 1);
+}
+
+// ─── Process Pools ──────────────────────────────────────────────────────────
+
+function processVertexBuffers(pool, companionFiles) {
+  const entries = getPoolEntries(pool);
+  const buffers = [];
+  for (const entry of entries) {
+    const name = getScalar(entry, 'Name') || '';
+    const flags = getScalar(entry, 'Flags') || 0;
+    const size = getScalar(entry, 'Size') || 0;
+    const dataNode = findChildByKey(entry, 'Data');
+    const fileName = getScalar(entry, 'FileName') || '';
+    let data = null;
+    if (dataNode && dataNode.value instanceof Uint8Array) {
+      data = dataNode.value;
+    } else if (fileName && companionFiles[fileName.toLowerCase()]) {
+      data = new Uint8Array(companionFiles[fileName.toLowerCase()]);
+    }
+    buffers.push({ name, flags, size, data, fileName, index: buffers.length });
+    if (data) log(`  VB[${buffers.length-1}] "${name}" ${data.byteLength}B`);
+    else log(`  VB[${buffers.length-1}] "${name}" no data (file: ${fileName})`, 'warn');
+  }
+  return buffers;
+}
+
+function processIndexBuffers(pool, companionFiles) {
+  const entries = getPoolEntries(pool);
+  const buffers = [];
+  for (const entry of entries) {
+    const width = getScalar(entry, 'Width') || 2;
+    const name = getScalar(entry, 'Name') || '';
+    const flags = getScalar(entry, 'Flags') || 0;
+    const size = getScalar(entry, 'Size') || 0;
+    const dataNode = findChildByKey(entry, 'Data');
+    const fileName = getScalar(entry, 'FileName') || '';
+    let data = null;
+    if (dataNode && dataNode.value instanceof Uint8Array) {
+      data = dataNode.value;
+    } else if (fileName && companionFiles[fileName.toLowerCase()]) {
+      data = new Uint8Array(companionFiles[fileName.toLowerCase()]);
+    }
+    buffers.push({ width, name, flags, size, data, fileName, index: buffers.length });
+    if (data) log(`  IB[${buffers.length-1}] "${name}" w=${width} ${data.byteLength}B`);
+    else log(`  IB[${buffers.length-1}] "${name}" no data (file: ${fileName})`, 'warn');
+  }
+  return buffers;
+}
+
+function processVertexStreams(pool) {
+  const entries = getPoolEntries(pool);
+  const streams = [];
+  for (const entry of entries) {
+    const length = getScalar(entry, 'Length') || 0;
+    const width = getScalar(entry, 'Width') || 0;
+    const extraStride = getScalar(entry, 'ExtraStride') || 0;
+    const vbRef = getScalar(entry, 'VertexBufferReference');
+    const vbOff = getScalar(entry, 'VertexBufferOffset') || 0;
+    const elementsAgg = findChildByKey(entry, 'Elements');
+    const elements = [];
+    if (elementsAgg) {
+      for (const el of elementsAgg.children) {
+        if (el.atomType === 1) {
+          elements.push({
+            type: getScalar(el, 'Type') || 0,
+            name: getScalar(el, 'Name') || '',
+            offset: getScalar(el, 'Offset') || 0
+          });
+        }
+      }
+    }
+    let stride = extraStride;
+    for (const el of elements) stride += getVFSize(el.type);
+    streams.push({ length, width, extraStride, vbRef, vbOffset: vbOff, elements, stride, index: streams.length });
+    if (elements.length > 0) {
+      const elNames = elements.map(e => `${e.name}(t${e.type})`).join(', ');
+      log(`  VS[${streams.length-1}] vb=${vbRef} len=${length} stride=${stride}: ${elNames}`);
+    }
+  }
+  log(`  ${streams.length} vertex streams total`);
+  return streams;
+}
+
+function processIndexStreams(pool) {
+  const entries = getPoolEntries(pool);
+  const streams = [];
+  for (const entry of entries) {
+    const length = getScalar(entry, 'Length') || 0;
+    const ibRef = getScalar(entry, 'IndexBufferReference');
+    const ibOff = getScalar(entry, 'IndexBufferOffset') || 0;
+    const baseVertex = getScalar(entry, 'BaseVertexIndex') || 0;
+    const primType = getScalar(entry, 'IndexStreamPrimitive') || 'trianglelist';
+    streams.push({ length, ibRef, ibOffset: ibOff, baseVertex, primType, index: streams.length });
+  }
+  log(`  ${streams.length} index streams`);
+  return streams;
+}
+
+function processSceneTreeNodes(pool) {
+  const entries = getPoolEntries(pool);
+  const nodes = [];
+  for (const entry of entries) {
+    const type = getScalar(entry, 'Type') || '';
+    const numPrims = getScalar(entry, 'NumPrimitives') || 0;
+    const meshName = getScalar(entry, 'MeshName') || '';
+    const primitives = [];
+
+    // Look for Primitives aggregate
+    const primsAgg = findChildByKey(entry, 'Primitives') || findChildByKey(entry, 'PopulationGroupPrimitives');
+    if (primsAgg) {
+      for (const prim of primsAgg.children) {
+        if (prim.atomType !== 1) continue;
+        const isRef = getScalar(prim, 'IndexStreamReference');
+        const isRefs = getList(prim, 'IndexStreamReferences');
+        const vsRefs = getList(prim, 'VertexStreamReferences');
+        const matRef = getScalar(prim, 'MaterialReference');
+        const matName = getScalar(prim, 'MaterialName') || '';
+        const unitBase = getList(prim, 'UnitBase');
+        const unitScale = getList(prim, 'UnitScale');
+        const vdata = getList(prim, 'Vdata');
+        const idata = getList(prim, 'Idata');
+        primitives.push({
+          indexStreamRef: isRef !== undefined ? isRef : (isRefs ? isRefs[0] : -1),
+          indexStreamRefs: isRefs ? Array.from(isRefs) : (isRef !== undefined ? [isRef] : []),
+          vertexStreamRefs: vsRefs ? Array.from(vsRefs) : [],
+          materialRef: matRef !== undefined ? matRef : -1,
+          materialName: matName,
+          unitBase: unitBase ? Array.from(unitBase) : null,
+          unitScale: unitScale ? Array.from(unitScale) : null,
+          vdata: vdata ? Array.from(vdata) : null,
+          idata: idata ? Array.from(idata) : null
+        });
+      }
+    }
+
+    // Skinning data
+    const numInfluences = getScalar(entry, 'NumInfluences') || 0;
+    const influences = [];
+    const influencesAgg = findChildByKey(entry, 'Influences');
+    if (influencesAgg) {
+      for (const inf of influencesAgg.children) {
+        if (inf.atomType !== 1) continue;
+        const infName = getScalar(inf, 'Name') || inf.name || '';
+        const ibmList = getList(inf, 'BindPoseSkinLocalToWorldMatrixInverseData');
+        influences.push({
+          name: infName,
+          inverseBindMatrix: ibmList ? Array.from(ibmList) : null
+        });
+      }
+    }
+    const influenceRemapRefs = getList(entry, 'InfluenceRemapInfluenceRefs');
+    const influenceRemapPrimData = getList(entry, 'InfluenceRemapPrimitiveData');
+
+    nodes.push({
+      type, numPrims, meshName, primitives, name: entry.name, entry,
+      numInfluences, influences,
+      influenceRemapRefs: influenceRemapRefs ? Array.from(influenceRemapRefs) : null,
+      influenceRemapPrimData: influenceRemapPrimData ? Array.from(influenceRemapPrimData) : null
+    });
+  }
+  log(`  ${nodes.length} scene tree nodes`);
+  return nodes;
+}
+
+function parseBasisPool(subNetworkPool) {
+  if (!subNetworkPool) return [];
+  const entries = getPoolEntries(subNetworkPool);
+  for (const entry of entries) {
+    const type = getScalar(entry, 'Type') || '';
+    if (type !== 'Scene') continue;
+    const basisPool = findChildByKey(entry, 'BasisPool');
+    if (!basisPool) continue;
+    const basisEntries = getPoolEntries(basisPool);
+    const bones = [];
+    for (const basis of basisEntries) {
+      const name = getScalar(basis, 'Name') || basis.name || '';
+      const parentRef = getScalar(basis, 'ParentRef');
+      bones.push({ name, parentRef: parentRef !== undefined && parentRef !== null ? parentRef : -1, index: bones.length });
+    }
+    log(`  BasisPool: ${bones.length} skeleton bones`);
+    return bones;
+  }
+  return [];
+}
+
+function processMaterials(pool) {
+  if (!pool) return [];
+  const entries = getPoolEntries(pool);
+  const materials = [];
+  for (const entry of entries) {
+    const fileName = getScalar(entry, 'FileName') || '';
+    const type = getScalar(entry, 'Type') || '';
+    const textureRefs = [];
+    // Look for MaterialComponent children with texture references
+    for (const child of entry.children) {
+      if (child.atomType === 1) {
+        const texRef = getScalar(child, 'TextureReference');
+        if (texRef !== undefined) textureRefs.push(texRef);
+        // Also look for nested texture references
+        for (const gc of child.children) {
+          const tr = getScalar(gc, 'TextureReference');
+          if (tr !== undefined) textureRefs.push(tr);
+        }
+      }
+    }
+    materials.push({ fileName, type, textureRefs, index: materials.length });
+  }
+  return materials;
+}
+
+function processTextures(pool) {
+  if (!pool) return [];
+  const entries = getPoolEntries(pool);
+  const textures = [];
+  for (const entry of entries) {
+    const fileName = getScalar(entry, 'FileName') || getScalar(entry, 'Name') || '';
+    textures.push({ fileName, index: textures.length });
+  }
+  return textures;
+}
+
+// ─── MTB (Material Bundle) Parser ────────────────────────────────────────────
+
+function parseMTB(buf) {
+  const dv = new DataView(buf);
+  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (magic !== 'BNDL') { log('MTB: not a BNDL file', 'warn'); return null; }
+
+  const version = dv.getUint32(4, true);
+  const totalSize = dv.getUint32(8, true);
+  const sectionCount = dv.getUint32(12, true);
+
+  const result = { textureEntries: [], materialCount: 0 };
+  let pos = 16;
+
+  for (let s = 0; s < sectionCount; s++) {
+    if (pos + 16 > buf.byteLength) break;
+    const secMagic = String.fromCharCode(dv.getUint8(pos), dv.getUint8(pos+1), dv.getUint8(pos+2), dv.getUint8(pos+3));
+    const secVersion = dv.getUint32(pos + 4, true);
+    const secSize = dv.getUint32(pos + 8, true);
+    const secCount = dv.getUint32(pos + 12, true);
+
+    if (secMagic === 'TEXB') {
+      const dataStart = pos + 16;
+      for (let t = 0; t < secCount; t++) {
+        const entryOff = dataStart + t * 12;
+        if (entryOff + 12 > buf.byteLength) break;
+        const flags = dv.getUint32(entryOff, true);
+        const hashBytes = new Uint8Array(buf, entryOff + 4, 8);
+        const hash = Array.from(hashBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        if (hash !== '0000000000000000') {
+          result.textureEntries.push({ hash, flags, index: result.textureEntries.length });
+        }
+      }
+      log(`MTB TEXB: ${result.textureEntries.length} texture hash(es)`);
+    } else if (secMagic === 'MATP') {
+      result.materialCount = secCount;
+      log(`MTB MATP: ${secCount} material(s)`);
+    }
+
+    pos += secSize;
+  }
+
+  // Classify textures: color/diffuse vs other (normal, specular, etc.)
+  const texCount = result.textureEntries.length;
+  const matCount = result.materialCount || 1;
+  const texPerMat = matCount > 0 && texCount >= matCount && texCount % matCount === 0
+    ? texCount / matCount : 0;
+
+  for (const entry of result.textureEntries) {
+    const isColorByFlags = entry.flags === 0x00000000;
+    const isColorByPosition = texPerMat > 0 && (entry.index % texPerMat === 0);
+    entry.isColor = isColorByFlags || isColorByPosition;
+  }
+
+  const colorCount = result.textureEntries.filter(e => e.isColor).length;
+  if (colorCount > 0) log(`  ${colorCount} identified as color/diffuse, ${texCount - colorCount} as other (normal, spec, etc.)`);
+
+  return result;
+}
+
+// ─── Mesh Building ──────────────────────────────────────────────────────────
+
+function buildGeometry(vsRefs, isRef, vertexStreams, indexStreams, vertexBuffers, indexBuffers, unitBase, unitScale) {
+  if (isRef < 0 || isRef >= indexStreams.length) return null;
+  const is = indexStreams[isRef];
+  if (is.ibRef === undefined || is.ibRef === null || is.ibRef < 0 || is.ibRef >= indexBuffers.length) return null;
+  const ib = indexBuffers[is.ibRef];
+  if (!ib.data) return null;
+
+  if (is.primType !== 'trianglelist' && is.primType !== 'trianglestrip') {
+    log(`  Skipping prim type: ${is.primType}`, 'warn');
+    return null;
+  }
+
+  // Read indices
+  const ibDv = new DataView(ib.data.buffer, ib.data.byteOffset, ib.data.byteLength);
+  const rawIndices = [];
+  for (let i = 0; i < is.length; i++) {
+    const off = is.ibOffset + i * ib.width;
+    if (off + ib.width > ib.data.byteLength) break;
+    let idx;
+    if (ib.width === 4) idx = ibDv.getUint32(off, true);
+    else if (ib.width === 2) idx = ibDv.getUint16(off, true);
+    else idx = ibDv.getUint8(off);
+    rawIndices.push(idx + is.baseVertex);
+  }
+
+  // Convert triangle strip to triangle list if needed
+  let indices;
+  if (is.primType === 'trianglestrip') {
+    indices = [];
+    for (let i = 2; i < rawIndices.length; i++) {
+      if (i % 2 === 0) {
+        indices.push(rawIndices[i-2], rawIndices[i-1], rawIndices[i]);
+      } else {
+        indices.push(rawIndices[i-1], rawIndices[i-2], rawIndices[i]);
+      }
+    }
+  } else {
+    indices = rawIndices;
+  }
+
+  // Find vertex data from vertex streams
+  let positions = null, normals = null, uvs = null, colors = null, tangents = null;
+  let boneIndexArr = null, boneWeightArr = null;
+
+  for (const vsIdx of vsRefs) {
+    if (vsIdx < 0 || vsIdx >= vertexStreams.length) continue;
+    const vs = vertexStreams[vsIdx];
+    if (vs.vbRef === undefined || vs.vbRef === null || vs.vbRef < 0 || vs.vbRef >= vertexBuffers.length) continue;
+    const vb = vertexBuffers[vs.vbRef];
+    if (!vb.data) continue;
+
+    const vbDv = new DataView(vb.data.buffer, vb.data.byteOffset, vb.data.byteLength);
+
+    for (const el of vs.elements) {
+      const semanticLower = el.name.toLowerCase();
+      const isPosition = semanticLower === 'position';
+      const isNormal = semanticLower === 'normal';
+      const isTangent = semanticLower === 'tangent';
+      const isUV = semanticLower === 'basemapuv' || semanticLower === 'detailmapuv' || semanticLower === 'lightmapuv';
+      const isColor = semanticLower === 'color';
+      const isBoneIndex = semanticLower === 'boneindex';
+      const isBoneWeight = semanticLower === 'boneweight';
+
+      if (!isPosition && !isNormal && !isTangent && !isUV && !isColor && !isBoneIndex && !isBoneWeight) continue;
+
+      const arr = [];
+      for (let v = 0; v < vs.length; v++) {
+        const vOff = vs.vbOffset + v * vs.stride + el.offset;
+        if (vOff + getVFSize(el.type) > vb.data.byteLength) break;
+        let vals = decodeVertexElement(vbDv, vOff, el.type);
+
+        if (isPosition && el.type === 56 && unitBase && unitScale) {
+          vals = [
+            (vals[0] / 32767.0) * unitScale[0] + unitBase[0],
+            (vals[1] / 32767.0) * unitScale[1] + unitBase[1],
+            (vals[2] / 32767.0) * unitScale[2] + unitBase[2]
+          ];
+        }
+        arr.push(vals);
+      }
+
+      if (isPosition && !positions) positions = arr;
+      else if (isNormal && !normals) normals = arr;
+      else if (isTangent && !tangents) tangents = arr;
+      else if (isUV && !uvs) uvs = arr;
+      else if (isColor && !colors) colors = arr;
+      else if (isBoneIndex && !boneIndexArr) boneIndexArr = arr;
+      else if (isBoneWeight && !boneWeightArr) boneWeightArr = arr;
+    }
+  }
+
+  if (!positions || positions.length === 0) return null;
+
+  const geo = new THREE.BufferGeometry();
+
+  const posArr = new Float32Array(positions.length * 3);
+  for (let i = 0; i < positions.length; i++) {
+    posArr[i*3]   = positions[i][0] || 0;
+    posArr[i*3+1] = positions[i][1] || 0;
+    posArr[i*3+2] = positions[i][2] || 0;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+
+  if (normals && normals.length === positions.length) {
+    const nrmArr = new Float32Array(normals.length * 3);
+    for (let i = 0; i < normals.length; i++) {
+      nrmArr[i*3]   = normals[i][0] || 0;
+      nrmArr[i*3+1] = normals[i][1] || 0;
+      nrmArr[i*3+2] = normals[i][2] || 0;
+    }
+    geo.setAttribute('normal', new THREE.BufferAttribute(nrmArr, 3));
+  }
+
+  if (uvs && uvs.length === positions.length) {
+    const uvArr = new Float32Array(uvs.length * 2);
+    for (let i = 0; i < uvs.length; i++) {
+      uvArr[i*2]   = uvs[i][0] || 0;
+      uvArr[i*2+1] = uvs[i][1] || 0;
+    }
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvArr, 2));
+  }
+
+  if (colors && colors.length === positions.length) {
+    const colArr = new Float32Array(colors.length * 4);
+    for (let i = 0; i < colors.length; i++) {
+      colArr[i*4]   = colors[i][0] || 0;
+      colArr[i*4+1] = colors[i][1] || 0;
+      colArr[i*4+2] = colors[i][2] || 0;
+      colArr[i*4+3] = colors[i][3] !== undefined ? colors[i][3] : 1;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colArr, 4));
+  }
+
+  // Filter out degenerate / out-of-range indices
+  const validIndices = [];
+  for (let i = 0; i < indices.length - 2; i += 3) {
+    const a = indices[i], b = indices[i+1], c = indices[i+2];
+    if (a < positions.length && b < positions.length && c < positions.length && a !== b && b !== c && a !== c) {
+      validIndices.push(a, b, c);
+    }
+  }
+
+  if (validIndices.length === 0) return null;
+
+  geo.setIndex(validIndices.length > 65535
+    ? new THREE.BufferAttribute(new Uint32Array(validIndices), 1)
+    : new THREE.BufferAttribute(new Uint16Array(validIndices), 1));
+
+  if (!normals) geo.computeVertexNormals();
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+
+  if (boneIndexArr && boneWeightArr && boneIndexArr.length === positions.length) {
+    const biFlat = new Uint8Array(boneIndexArr.length * 4);
+    const bwFlat = new Float32Array(boneWeightArr.length * 4);
+    for (let i = 0; i < boneIndexArr.length; i++) {
+      for (let j = 0; j < 4; j++) {
+        biFlat[i * 4 + j] = boneIndexArr[i][j] || 0;
+        bwFlat[i * 4 + j] = boneWeightArr[i][j] || 0;
+      }
+    }
+    geo.userData.rawBoneIndices = biFlat;
+    geo.userData.rawBoneWeights = bwFlat;
+  }
+
+  return geo;
+}
+
+// ─── Inline Vdata/Idata Geometry Builder ─────────────────────────────────
+
+// Vdata format (Win32/360/XB1/PS4): [NumStreams, NumVertices, {VBRef, VBOffset, Stride}, ...]
+// Idata format: [IBRef, IBOffset (in indices), BaseVertexIndex, IndexCount]
+
+function buildGeometryFromInlineData(prim, vertexBuffers, indexBuffers) {
+  const { vdata, idata } = prim;
+  if (!vdata || !idata || vdata.length < 2 || idata.length < 4) return null;
+
+  const ibRef = idata[0];
+  const ibOffsetInIndices = idata[1];
+  const baseVertexIndex = idata[2];
+  const indexCount = idata[3];
+
+  if (ibRef < 0 || ibRef >= indexBuffers.length) return null;
+  const ib = indexBuffers[ibRef];
+  if (!ib.data || indexCount === 0) return null;
+
+  const ibDv = new DataView(ib.data.buffer, ib.data.byteOffset, ib.data.byteLength);
+  const ibByteOffset = ibOffsetInIndices * ib.width;
+  const indices = [];
+  for (let i = 0; i < indexCount; i++) {
+    const off = ibByteOffset + i * ib.width;
+    if (off + ib.width > ib.data.byteLength) break;
+    let idx;
+    if (ib.width === 4) idx = ibDv.getUint32(off, true);
+    else if (ib.width === 2) idx = ibDv.getUint16(off, true);
+    else idx = ibDv.getUint8(off);
+    indices.push(idx + baseVertexIndex);
+  }
+
+  const numStreams = vdata[0];
+  const numVertices = vdata[1];
+  if (numVertices === 0) return null;
+
+  const streams = [];
+  for (let s = 0; s < numStreams; s++) {
+    const base = 2 + s * 3;
+    if (base + 2 >= vdata.length) break;
+    streams.push({
+      vbRef: vdata[base],
+      vbOffset: vdata[base + 1],
+      stride: vdata[base + 2]
+    });
+  }
+  log(`  Inline prim: ${numVertices} verts, ${indexCount} indices, ${numStreams} streams (strides: ${streams.map(s=>s.stride).join(', ')})`);
+
+  let positions = null, normals = null, uvs = null;
+  let rawBoneIndices = null, rawBoneWeights = null;
+
+  for (let si = 0; si < streams.length; si++) {
+    const stream = streams[si];
+    if (stream.vbRef < 0 || stream.vbRef >= vertexBuffers.length) continue;
+    const vb = vertexBuffers[stream.vbRef];
+    if (!vb.data) continue;
+    const vbDv = new DataView(vb.data.buffer, vb.data.byteOffset, vb.data.byteLength);
+
+    if (stream.stride >= 12 && !positions) {
+      positions = new Float32Array(numVertices * 3);
+      for (let v = 0; v < numVertices; v++) {
+        const off = stream.vbOffset + v * stream.stride;
+        if (off + 12 > vb.data.byteLength) break;
+        positions[v * 3]     = vbDv.getFloat32(off, true);
+        positions[v * 3 + 1] = vbDv.getFloat32(off + 4, true);
+        positions[v * 3 + 2] = vbDv.getFloat32(off + 8, true);
+      }
+
+      if (stream.stride >= 16 && !uvs) {
+        uvs = new Float32Array(numVertices * 2);
+        for (let v = 0; v < numVertices; v++) {
+          const off = stream.vbOffset + v * stream.stride + 12;
+          if (off + 4 > vb.data.byteLength) break;
+          uvs[v * 2]     = decodeFloat16(vbDv.getUint16(off, true));
+          uvs[v * 2 + 1] = decodeFloat16(vbDv.getUint16(off + 2, true));
+        }
+      }
+
+      // Stride 24: BoneIndex(U8_4) at offset 16, BoneWeight(U8_4_NORM) at offset 20
+      if (stream.stride >= 24 && !rawBoneIndices) {
+        rawBoneIndices = new Uint8Array(numVertices * 4);
+        rawBoneWeights = new Float32Array(numVertices * 4);
+        for (let v = 0; v < numVertices; v++) {
+          const off = stream.vbOffset + v * stream.stride + 16;
+          if (off + 8 > vb.data.byteLength) break;
+          const bOff = v * 4;
+          rawBoneIndices[bOff]     = vb.data[off];
+          rawBoneIndices[bOff + 1] = vb.data[off + 1];
+          rawBoneIndices[bOff + 2] = vb.data[off + 2];
+          rawBoneIndices[bOff + 3] = vb.data[off + 3];
+          rawBoneWeights[bOff]     = vb.data[off + 4] / 255;
+          rawBoneWeights[bOff + 1] = vb.data[off + 5] / 255;
+          rawBoneWeights[bOff + 2] = vb.data[off + 6] / 255;
+          rawBoneWeights[bOff + 3] = vb.data[off + 7] / 255;
+        }
+      }
+    } else if (stream.stride >= 8 && !normals) {
+      // Non-position stream: try Normal(FLOAT16_4) at offset 0
+      normals = new Float32Array(numVertices * 3);
+      let allValid = true;
+      for (let v = 0; v < numVertices; v++) {
+        const off = stream.vbOffset + v * stream.stride;
+        if (off + 8 > vb.data.byteLength) { allValid = false; break; }
+        const nx = decodeFloat16(vbDv.getUint16(off, true));
+        const ny = decodeFloat16(vbDv.getUint16(off + 2, true));
+        const nz = decodeFloat16(vbDv.getUint16(off + 4, true));
+        normals[v * 3]     = nx;
+        normals[v * 3 + 1] = ny;
+        normals[v * 3 + 2] = nz;
+      }
+      // Validate: check if first few normals are roughly unit length
+      if (allValid && numVertices > 0) {
+        let sumLen = 0;
+        const checkCount = Math.min(10, numVertices);
+        for (let v = 0; v < checkCount; v++) {
+          const nx = normals[v*3], ny = normals[v*3+1], nz = normals[v*3+2];
+          sumLen += Math.sqrt(nx*nx + ny*ny + nz*nz);
+        }
+        const avgLen = sumLen / checkCount;
+        if (avgLen < 0.8 || avgLen > 1.2) {
+          log(`  Normal validation failed (avg len=${avgLen.toFixed(3)}), will compute normals`, 'warn');
+          normals = null;
+        }
+      }
+    }
+  }
+
+  if (!positions || positions.length === 0) return null;
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+  if (normals) {
+    geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  }
+
+  if (uvs) {
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  }
+
+  const validIndices = [];
+  const maxVert = numVertices;
+  for (let i = 0; i < indices.length - 2; i += 3) {
+    const a = indices[i], b = indices[i+1], c = indices[i+2];
+    if (a < maxVert && b < maxVert && c < maxVert && a !== b && b !== c && a !== c) {
+      validIndices.push(a, b, c);
+    }
+  }
+
+  if (validIndices.length === 0) return null;
+
+  geo.setIndex(validIndices.length > 65535
+    ? new THREE.BufferAttribute(new Uint32Array(validIndices), 1)
+    : new THREE.BufferAttribute(new Uint16Array(validIndices), 1));
+
+  if (!normals) geo.computeVertexNormals();
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+
+  if (rawBoneIndices && rawBoneWeights) {
+    geo.userData.rawBoneIndices = rawBoneIndices;
+    geo.userData.rawBoneWeights = rawBoneWeights;
+  }
+
+  return geo;
+}
+
+// ─── Skeleton Builder ───────────────────────────────────────────────────
+
+function buildSkeletonFromInfluences(influences, basisBones) {
+  if (!influences || influences.length === 0) return null;
+
+  const basisByName = new Map();
+  for (const b of basisBones) basisByName.set(b.name, b);
+
+  const influenceNames = new Set(influences.map(inf => inf.name));
+
+  const bones = [];
+  for (let i = 0; i < influences.length; i++) {
+    const bone = new THREE.Bone();
+    bone.name = influences[i].name;
+    bones.push(bone);
+  }
+
+  // Set parent-child: walk up BasisPool hierarchy to find closest ancestor in the influence set
+  const influenceByName = new Map();
+  for (let i = 0; i < influences.length; i++) influenceByName.set(influences[i].name, i);
+
+  for (let i = 0; i < influences.length; i++) {
+    const basis = basisByName.get(influences[i].name);
+    if (!basis || basis.parentRef < 0) continue;
+
+    let parentBasis = basisBones[basis.parentRef];
+    while (parentBasis) {
+      const pIdx = influenceByName.get(parentBasis.name);
+      if (pIdx !== undefined && pIdx !== i) {
+        bones[pIdx].add(bones[i]);
+        break;
+      }
+      if (parentBasis.parentRef < 0 || parentBasis.parentRef >= basisBones.length) break;
+      parentBasis = basisBones[parentBasis.parentRef];
+    }
+  }
+
+  // Fallback: infer parent for influences not found in BasisPool (e.g. Thumb3, Index2, OL bones)
+  for (let i = 0; i < influences.length; i++) {
+    if (bones[i].parent && bones[i].parent.isBone) continue;
+    if (basisByName.has(influences[i].name)) continue;
+
+    const name = influences[i].name;
+    let parentName = null;
+
+    // Numbered suffix: Thumb3 → Thumb2, Index2 → Index1, Middle2 → Middle1
+    const numMatch = name.match(/^(.+?)(\d+)(_.+)?$/);
+    if (numMatch) {
+      const base = numMatch[1], num = parseInt(numMatch[2]), suffix = numMatch[3] || '';
+      if (num > 1) parentName = base + (num - 1) + suffix;
+    }
+
+    // OL/OLHalf variants: Forearm_OL_Left → Elbow_Left, Shoulder_OL_Left → Shoulder_Left
+    if (!parentName || !influenceByName.has(parentName)) {
+      const olMatch = name.match(/^(.+?)_OL(?:Half)?_(Left|Right)$/);
+      if (olMatch) {
+        const base = olMatch[1], side = olMatch[2];
+        // Try the base bone directly (e.g. Shoulder_OL → Shoulder)
+        parentName = base + '_' + side;
+        if (!influenceByName.has(parentName)) {
+          // Try common chain mappings
+          const chainMap = { Forearm: 'Elbow', Thigh: 'Hips', Shoulder: 'Shoulder' };
+          const mapped = chainMap[base];
+          if (mapped) parentName = mapped + '_' + side;
+          if (!influenceByName.has(parentName)) parentName = null;
+        }
+      }
+    }
+
+    if (parentName) {
+      const pIdx = influenceByName.get(parentName);
+      if (pIdx !== undefined && pIdx !== i) {
+        bones[pIdx].add(bones[i]);
+      }
+    }
+  }
+
+  // Auto-detect matrix storage order (row-major vs column-major)
+  let needsTranspose = false;
+  for (const inf of influences) {
+    if (!inf.inverseBindMatrix || inf.inverseBindMatrix.length !== 16) continue;
+    const d = inf.inverseBindMatrix;
+    const rowMajorTransMag = Math.abs(d[3]) + Math.abs(d[7]) + Math.abs(d[11]);
+    const colMajorTransMag = Math.abs(d[12]) + Math.abs(d[13]) + Math.abs(d[14]);
+    needsTranspose = rowMajorTransMag > colMajorTransMag;
+    break;
+  }
+
+  const inverseBindMatrices = [];
+  const worldMatrices = [];
+
+  for (let i = 0; i < influences.length; i++) {
+    const ibm = new THREE.Matrix4();
+    if (influences[i].inverseBindMatrix && influences[i].inverseBindMatrix.length === 16) {
+      ibm.fromArray(influences[i].inverseBindMatrix);
+      if (needsTranspose) ibm.transpose();
+    }
+    inverseBindMatrices.push(ibm);
+    const wm = ibm.clone();
+    const det = wm.determinant();
+    if (Math.abs(det) > 1e-10) {
+      wm.invert();
+    }
+    worldMatrices.push(wm);
+  }
+
+  // Decompose into local transforms
+  for (let i = 0; i < bones.length; i++) {
+    const worldMat = worldMatrices[i];
+    if (bones[i].parent && bones[i].parent.isBone) {
+      const parentIdx = bones.indexOf(bones[i].parent);
+      if (parentIdx >= 0) {
+        const localMat = worldMatrices[parentIdx].clone().invert().multiply(worldMat);
+        localMat.decompose(bones[i].position, bones[i].quaternion, bones[i].scale);
+        continue;
+      }
+    }
+    worldMat.decompose(bones[i].position, bones[i].quaternion, bones[i].scale);
+  }
+
+  const rootBones = bones.filter(b => !b.parent || !b.parent.isBone);
+  const skeleton = new THREE.Skeleton(bones, inverseBindMatrices);
+
+  return { skeleton, rootBones, bones, inverseBindMatrices };
+}
+
+function buildMeshes(root, companionFiles) {
+  const pools = extractPools(root);
+
+  log('Processing vertex buffers...');
+  const vertexBuffers = processVertexBuffers(pools['VertexBufferPool'], companionFiles);
+  log('Processing index buffers...');
+  const indexBuffers = processIndexBuffers(pools['IndexBufferPool'], companionFiles);
+  log('Processing vertex streams...');
+  const vertexStreams = processVertexStreams(pools['VertexStreamPool']);
+  log('Processing index streams...');
+  const indexStreams = processIndexStreams(pools['IndexStreamPool']);
+  log('Processing scene tree...');
+  const sceneNodes = processSceneTreeNodes(pools['SceneTreeNodePool']);
+  const materials = processMaterials(pools['MaterialPool']);
+  const textures = processTextures(pools['TexturePool']);
+
+  log('Processing skeleton...');
+  const basisBones = parseBasisPool(pools['SubNetworkPool']);
+
+  log(`Materials: ${materials.length}, Textures: ${textures.length}`);
+
+  const greyMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.7, metalness: 0.1, side: THREE.DoubleSide });
+  const greyVertColMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, metalness: 0.1, side: THREE.DoubleSide, vertexColors: true });
+
+  // Build meshes from scene tree geometry nodes
+  const meshes = [];
+  const meshMaterialRefs = [];
+  const meshLabels = [];
+  let totalVerts = 0, totalTris = 0;
+
+  const geoNodes = sceneNodes.filter(n => n.type === 'Geometry' && n.primitives.length > 0);
+  log(`Found ${geoNodes.length} geometry nodes with primitives`);
+
+  if (geoNodes.length > 0) {
+    for (const node of geoNodes) {
+      // Build skeleton once per geometry node, shared across its primitives
+      const nodeHasSkin = node.influences.length > 0 && basisBones.length > 0;
+      let nodeSkelResult = null;
+      let nodeSkelOwner = null;
+      if (nodeHasSkin) {
+        nodeSkelResult = buildSkeletonFromInfluences(node.influences, basisBones);
+      }
+
+      for (let pi = 0; pi < node.primitives.length; pi++) {
+        const prim = node.primitives[pi];
+        let geo = null;
+
+        if (prim.vertexStreamRefs.length > 0 && prim.indexStreamRef >= 0) {
+          geo = buildGeometry(
+            prim.vertexStreamRefs, prim.indexStreamRef,
+            vertexStreams, indexStreams, vertexBuffers, indexBuffers,
+            prim.unitBase, prim.unitScale
+          );
+        } else if (prim.vdata && prim.idata) {
+          geo = buildGeometryFromInlineData(prim, vertexBuffers, indexBuffers);
+        }
+
+        if (!geo) continue;
+
+        const hasSkinData = geo.userData.rawBoneIndices && nodeSkelResult;
+        let mesh;
+
+        if (hasSkinData) {
+          const rawBI = geo.userData.rawBoneIndices;
+          const rawBW = geo.userData.rawBoneWeights;
+          const numVerts = geo.getAttribute('position').count;
+
+          const skinIndex = new Uint16Array(numVerts * 4);
+          const skinWeight = new Float32Array(numVerts * 4);
+
+          let remapOffset = 0;
+          if (node.influenceRemapPrimData && pi * 2 < node.influenceRemapPrimData.length) {
+            remapOffset = node.influenceRemapPrimData[pi * 2];
+          }
+
+          const maxBoneIdx = node.influences.length - 1;
+          for (let v = 0; v < numVerts; v++) {
+            for (let j = 0; j < 4; j++) {
+              const rawIdx = rawBI[v * 4 + j];
+              const weight = rawBW[v * 4 + j];
+              let influenceIdx = rawIdx;
+
+              if (node.influenceRemapRefs && (remapOffset + rawIdx) < node.influenceRemapRefs.length) {
+                influenceIdx = node.influenceRemapRefs[remapOffset + rawIdx];
+              }
+
+              skinIndex[v * 4 + j] = Math.min(Math.max(0, influenceIdx), maxBoneIdx);
+              skinWeight[v * 4 + j] = weight;
+            }
+          }
+
+          geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinIndex, 4));
+          geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinWeight, 4));
+
+          const hasVertColor = geo.getAttribute('color') !== undefined;
+          const mat = hasVertColor ? greyVertColMat.clone() : greyMat.clone();
+          mat.skinning = true;
+          mesh = new THREE.SkinnedMesh(geo, mat);
+
+          if (!nodeSkelOwner) {
+            // First primitive owns the bones
+            for (const rb of nodeSkelResult.rootBones) mesh.add(rb);
+            mesh.bind(nodeSkelResult.skeleton);
+            nodeSkelOwner = mesh;
+          } else {
+            // Subsequent primitives share the skeleton
+            mesh.bind(nodeSkelResult.skeleton);
+          }
+          mesh.userData.skeleton = nodeSkelResult.skeleton;
+          log(`  Skinned mesh: ${node.influences.length} bones, remap offset ${remapOffset}`);
+        } else {
+          const hasVertColor = geo.getAttribute('color') !== undefined;
+          mesh = new THREE.Mesh(geo, hasVertColor ? greyVertColMat : greyMat);
+        }
+
+        meshes.push(mesh);
+        meshMaterialRefs.push(prim.materialRef);
+
+        let label = '';
+        if (prim.materialName) {
+          const parts = prim.materialName.replace(/\\/g, '/').split('/').pop().split('__');
+          label = parts[parts.length - 1] || parts[0] || '';
+          label = label.replace(/^materials?_/i, '').replace(/_skinning_isEnabled_true$/i, '');
+        }
+        if (!label) label = node.meshName || node.name || '';
+        if (node.primitives.length > 1) label += ` [${pi}]`;
+        meshLabels.push(label || `mesh_${meshes.length - 1}`);
+
+        totalVerts += geo.getAttribute('position').count;
+        totalTris += geo.index ? geo.index.count / 3 : 0;
+      }
+    }
+  }
+
+  // Fallback: if no geometry nodes found, try pairing vertex/index streams directly
+  if (meshes.length === 0 && indexStreams.length > 0) {
+    log('No geometry nodes with primitives found; using fallback stream pairing...', 'warn');
+    for (const is of indexStreams) {
+      const matchingVS = vertexStreams.filter(vs => vs.vbRef !== undefined);
+      if (matchingVS.length > 0) {
+        const vsRefs = matchingVS.map(vs => vs.index);
+        const geo = buildGeometry(vsRefs, is.index, vertexStreams, indexStreams, vertexBuffers, indexBuffers, null, null);
+        if (geo) {
+          const hasVC = geo.getAttribute('color') !== undefined;
+          const mesh = new THREE.Mesh(geo, hasVC ? greyVertColMat : greyMat);
+          meshes.push(mesh);
+          meshMaterialRefs.push(-1);
+          meshLabels.push(`stream_${meshes.length - 1}`);
+          totalVerts += geo.getAttribute('position').count;
+          totalTris += geo.index ? geo.index.count / 3 : 0;
+        }
+      }
+    }
+  }
+
+  // Second fallback: try each vertex stream with each index stream
+  if (meshes.length === 0 && vertexStreams.length > 0 && indexStreams.length > 0) {
+    log('Trying brute-force stream pairing...', 'warn');
+    for (let isi = 0; isi < indexStreams.length; isi++) {
+      for (let vsi = 0; vsi < vertexStreams.length; vsi++) {
+        const vs = vertexStreams[vsi];
+        const hasPos = vs.elements.some(e => e.name.toLowerCase() === 'position');
+        if (!hasPos) continue;
+        const geo = buildGeometry([vsi], isi, vertexStreams, indexStreams, vertexBuffers, indexBuffers, null, null);
+        if (geo) {
+          const hasVC = geo.getAttribute('color') !== undefined;
+          const mesh = new THREE.Mesh(geo, hasVC ? greyVertColMat : greyMat);
+          meshes.push(mesh);
+          meshMaterialRefs.push(-1);
+          meshLabels.push(`stream_${meshes.length - 1}`);
+          totalVerts += geo.getAttribute('position').count;
+          totalTris += geo.index ? geo.index.count / 3 : 0;
+          break;
+        }
+      }
+    }
+  }
+
+  // Collect unique texture filenames needed by materials
+  const neededTextures = [];
+  const seenTexNames = new Set();
+
+  // Approach 1: TexturePool-based (older/unshipped builds)
+  for (const mat of materials) {
+    for (const tRef of mat.textureRefs) {
+      if (tRef >= 0 && tRef < textures.length) {
+        const texEntry = textures[tRef];
+        const baseName = texEntry.fileName.replace(/\\/g, '/').split('/').pop();
+        if (baseName && !seenTexNames.has(baseName.toLowerCase())) {
+          seenTexNames.add(baseName.toLowerCase());
+          neededTextures.push({ baseName, texIndex: tRef, source: 'pool' });
+        }
+      }
+    }
+  }
+
+  // Approach 2: MTB-based (shipped builds) — when TexturePool is empty
+  let mtbData = null;
+  if (neededTextures.length === 0 && pools['MaterialBundlePool']) {
+    const mbEntries = getPoolEntries(pools['MaterialBundlePool']);
+    for (const mb of mbEntries) {
+      const mtbFileName = getScalar(mb, 'FileName') || '';
+      if (!mtbFileName) continue;
+
+      const mtbBase = mtbFileName.replace(/\\/g, '/').split('/').pop().toLowerCase();
+      log(`MaterialBundle references: ${mtbBase}`);
+
+      const mtbBuf = companionFiles[mtbBase];
+      if (mtbBuf) {
+        mtbData = parseMTB(mtbBuf);
+        if (mtbData && mtbData.textureEntries.length > 0) {
+          for (const entry of mtbData.textureEntries) {
+            const tbodyName = `${entry.hash}.tbody`;
+            if (!seenTexNames.has(tbodyName)) {
+              seenTexNames.add(tbodyName);
+              neededTextures.push({ baseName: tbodyName, hash: entry.hash, source: 'mtb', isColor: entry.isColor });
+            }
+          }
+        }
+      } else {
+        log(`MTB file "${mtbBase}" not provided as companion. Add it to the Buffers input to enable textures.`, 'warn');
+      }
+    }
+  }
+
+  return { meshes, meshMaterialRefs, meshLabels, totalVerts, totalTris, materials, textures, neededTextures, mtbData };
+}
+
+// ─── State ──────────────────────────────────────────────────────────────────
+
+let loadedMeshes = [];
+let loadedMeshMatRefs = [];
+let loadedMeshLabels = [];
+let loadedMaterials = [];
+let loadedTextures = [];
+let wireframeOn = false;
+let skeletonVisible = false;
+let skeletonHelpers = [];
+
+const MESH_COLORS = ['#e94560','#4ade80','#6bc5d2','#f0c040','#c084fc','#fb923c','#f472b6','#67e8f9','#a3e635','#fbbf24'];
+
+// ─── Wireframe Toggle ───────────────────────────────────────────────────────
+
+const wireBtn = document.getElementById('btn-wireframe');
+wireBtn.addEventListener('click', () => {
+  wireframeOn = !wireframeOn;
+  wireBtn.classList.toggle('toggle-on', wireframeOn);
+  for (const mesh of loadedMeshes) {
+    if (mesh.material) mesh.material.wireframe = wireframeOn;
+  }
+});
+
+// ─── Skeleton Toggle ────────────────────────────────────────────────────────
+
+const skelBtn = document.getElementById('btn-skeleton');
+skelBtn.addEventListener('click', () => {
+  try {
+    skeletonVisible = !skeletonVisible;
+    skelBtn.classList.toggle('toggle-on', skeletonVisible);
+
+    if (skeletonVisible) {
+      const seenSkeletons = new Set();
+      for (const mesh of loadedMeshes) {
+        if (mesh.isSkinnedMesh && mesh.skeleton && !seenSkeletons.has(mesh.skeleton)) {
+          seenSkeletons.add(mesh.skeleton);
+          mesh.updateWorldMatrix(true, true);
+          mesh.skeleton.update();
+          const helper = new THREE.SkeletonHelper(mesh);
+          helper.material.depthTest = false;
+          helper.material.depthWrite = false;
+          helper.visible = true;
+          scene.add(helper);
+          skeletonHelpers.push(helper);
+          log(`Skeleton visible: ${mesh.skeleton.bones.length} bones`);
+        }
+      }
+      if (skeletonHelpers.length === 0) {
+        log('No skinned meshes with skeletons found.', 'warn');
+        skeletonVisible = false;
+        skelBtn.classList.remove('toggle-on');
+      }
+    } else {
+      deselectBone();
+      for (const h of skeletonHelpers) { h.dispose(); scene.remove(h); }
+      skeletonHelpers = [];
+    }
+  } catch (e) {
+    log(`Skeleton toggle error: ${e.message}`, 'error');
+    console.error(e);
+  }
+});
+
+// ─── Bone Picker / Pose Editor ──────────────────────────────────────────────
+
+const boneStatEl = document.getElementById('stat-bone');
+let selectedBone = null;
+let boneMarker = null;
+let boneTransformCtrl = null;
+
+// Sphere marker for the selected bone
+const markerGeo = new THREE.SphereGeometry(1, 12, 8);
+const markerMat = new THREE.MeshBasicMaterial({ color: 0xc084fc, transparent: true, opacity: 0.6, depthTest: false });
+
+_boneUpdateFn = () => {
+  if (boneMarker && boneMarker.visible && selectedBone) {
+    const wp = new THREE.Vector3();
+    selectedBone.getWorldPosition(wp);
+    boneMarker.position.copy(wp);
+  }
+};
+
+function initBoneTransformControls() {
+  if (boneTransformCtrl) return;
+  boneTransformCtrl = new TransformControls(camera, renderer.domElement);
+  boneTransformCtrl.setMode('rotate');
+  boneTransformCtrl.setSize(0.8);
+  boneTransformCtrl.addEventListener('dragging-changed', e => {
+    controls.enabled = !e.value;
+  });
+  scene.add(boneTransformCtrl);
+}
+
+function selectBone(bone) {
+  if (!bone) { deselectBone(); return; }
+  initBoneTransformControls();
+  selectedBone = bone;
+
+  // Scale marker relative to model size
+  const box = new THREE.Box3();
+  for (const m of loadedMeshes) box.expandByObject(m);
+  const modelSize = box.getSize(new THREE.Vector3()).length();
+  const markerScale = modelSize * 0.012;
+
+  if (!boneMarker) {
+    boneMarker = new THREE.Mesh(markerGeo, markerMat);
+    boneMarker.renderOrder = 999;
+    scene.add(boneMarker);
+  }
+
+  const wp = new THREE.Vector3();
+  bone.getWorldPosition(wp);
+  boneMarker.position.copy(wp);
+  boneMarker.scale.setScalar(markerScale);
+  boneMarker.visible = true;
+
+  boneTransformCtrl.attach(bone);
+
+  boneStatEl.textContent = `Bone: ${bone.name} [${boneTransformCtrl.mode.charAt(0).toUpperCase()}]`;
+  boneStatEl.style.display = '';
+  if (typeof highlightBoneRow === 'function') highlightBoneRow(bone);
+}
+
+function deselectBone() {
+  selectedBone = null;
+  if (boneMarker) boneMarker.visible = false;
+  if (boneTransformCtrl) boneTransformCtrl.detach();
+  boneStatEl.style.display = 'none';
+  if (typeof highlightBoneRow === 'function') highlightBoneRow(null);
+}
+
+function getAllBones() {
+  const allBones = [];
+  const seenSkeletons = new Set();
+  for (const mesh of loadedMeshes) {
+    if (mesh.isSkinnedMesh && mesh.skeleton && !seenSkeletons.has(mesh.skeleton)) {
+      seenSkeletons.add(mesh.skeleton);
+      for (const bone of mesh.skeleton.bones) allBones.push(bone);
+    }
+  }
+  return allBones;
+}
+
+// Click on viewport to select nearest bone
+renderer.domElement.addEventListener('dblclick', (e) => {
+  const bones = getAllBones();
+  if (bones.length === 0) return;
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  const mouse = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  );
+
+  let bestBone = null, bestDist = Infinity;
+
+  for (const bone of bones) {
+    const wp = new THREE.Vector3();
+    bone.getWorldPosition(wp);
+    const projected = wp.clone().project(camera);
+    const dx = projected.x - mouse.x;
+    const dy = projected.y - mouse.y;
+    const screenDist = Math.sqrt(dx * dx + dy * dy);
+
+    if (screenDist < bestDist) {
+      bestDist = screenDist;
+      bestBone = bone;
+    }
+  }
+
+  // Only select if reasonably close (within ~10% of viewport)
+  if (bestBone && bestDist < 0.15) {
+    if (!skeletonVisible) {
+      skelBtn.click();
+    }
+    selectBone(bestBone);
+    log(`Selected bone: ${bestBone.name}`);
+  } else {
+    deselectBone();
+  }
+});
+
+// Keyboard shortcuts
+window.addEventListener('keydown', (e) => {
+  if (!selectedBone || !boneTransformCtrl) return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  switch (e.key.toLowerCase()) {
+    case 'r':
+      boneTransformCtrl.setMode('rotate');
+      boneStatEl.textContent = `Bone: ${selectedBone.name} [R]`;
+      break;
+    case 'g':
+      boneTransformCtrl.setMode('translate');
+      boneStatEl.textContent = `Bone: ${selectedBone.name} [T]`;
+      break;
+    case 's':
+      boneTransformCtrl.setMode('scale');
+      boneStatEl.textContent = `Bone: ${selectedBone.name} [S]`;
+      break;
+    case 'escape':
+      deselectBone();
+      break;
+  }
+});
+
+// ─── Export ─────────────────────────────────────────────────────────────────
+
+const exportGlbBtn = document.getElementById('btn-export-glb');
+const exportObjBtn = document.getElementById('btn-export-obj');
+
+function getExportScene() {
+  const exportGroup = new THREE.Group();
+  const skelCloneMap = new Map();
+
+  for (const mesh of loadedMeshes) {
+    if (!mesh.visible) continue;
+    if (mesh.isSkinnedMesh && mesh.skeleton) {
+      const clonedGeo = mesh.geometry.clone();
+      const clonedMat = mesh.material.clone();
+      const clonedMesh = new THREE.SkinnedMesh(clonedGeo, clonedMat);
+      clonedMesh.name = mesh.name;
+
+      let clonedSkeleton = skelCloneMap.get(mesh.skeleton);
+      if (!clonedSkeleton) {
+        const boneClones = mesh.skeleton.bones.map(b => {
+          const bc = new THREE.Bone();
+          bc.name = b.name;
+          bc.position.copy(b.position);
+          bc.quaternion.copy(b.quaternion);
+          bc.scale.copy(b.scale);
+          return bc;
+        });
+        for (let i = 0; i < mesh.skeleton.bones.length; i++) {
+          const origParent = mesh.skeleton.bones[i].parent;
+          if (origParent && origParent.isBone) {
+            const parentIdx = mesh.skeleton.bones.indexOf(origParent);
+            if (parentIdx >= 0) boneClones[parentIdx].add(boneClones[i]);
+          }
+        }
+
+        const inverses = mesh.skeleton.boneInverses.map(m => m.clone());
+        clonedSkeleton = new THREE.Skeleton(boneClones, inverses);
+        clonedSkeleton._rootClones = boneClones.filter(b => !b.parent || !b.parent.isBone);
+        skelCloneMap.set(mesh.skeleton, clonedSkeleton);
+
+        // First mesh with this skeleton owns the root bones
+        for (const rb of clonedSkeleton._rootClones) clonedMesh.add(rb);
+      }
+      clonedMesh.bind(clonedSkeleton);
+
+      exportGroup.add(clonedMesh);
+    } else {
+      exportGroup.add(mesh.clone());
+    }
+  }
+  return exportGroup;
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+exportGlbBtn.addEventListener('click', async () => {
+  if (loadedMeshes.length === 0) return;
+  exportGlbBtn.disabled = true;
+  exportGlbBtn.textContent = 'Exporting...';
+  try {
+    const exporter = new GLTFExporter();
+    const glb = await exporter.parseAsync(getExportScene(), { binary: true });
+    downloadBlob(new Blob([glb], { type: 'application/octet-stream' }), 'model.glb');
+    log('Exported GLB', 'success');
+  } catch (e) {
+    log(`GLB export failed: ${e.message}`, 'error');
+  }
+  exportGlbBtn.textContent = 'Export GLB';
+  exportGlbBtn.disabled = false;
+});
+
+function getBakedExportScene() {
+  const exportGroup = new THREE.Group();
+  for (const mesh of loadedMeshes) {
+    if (!mesh.visible) continue;
+    if (mesh.isSkinnedMesh && mesh.skeleton) {
+      mesh.updateWorldMatrix(true, true);
+      mesh.skeleton.update();
+      const geo = mesh.geometry.clone();
+      const posAttr = geo.getAttribute('position');
+      const v = new THREE.Vector3();
+      for (let i = 0; i < posAttr.count; i++) {
+        v.fromBufferAttribute(posAttr, i);
+        mesh.boneTransform(i, v);
+        posAttr.setXYZ(i, v.x, v.y, v.z);
+      }
+      posAttr.needsUpdate = true;
+      geo.deleteAttribute('skinIndex');
+      geo.deleteAttribute('skinWeight');
+      geo.computeVertexNormals();
+      const bakedMesh = new THREE.Mesh(geo, mesh.material.clone());
+      bakedMesh.name = mesh.name;
+      exportGroup.add(bakedMesh);
+    } else {
+      exportGroup.add(mesh.clone());
+    }
+  }
+  return exportGroup;
+}
+
+exportObjBtn.addEventListener('click', () => {
+  if (loadedMeshes.length === 0) return;
+  exportObjBtn.disabled = true;
+  exportObjBtn.textContent = 'Exporting...';
+  try {
+    const exporter = new OBJExporter();
+    const objString = exporter.parse(getBakedExportScene());
+    downloadBlob(new Blob([objString], { type: 'text/plain' }), 'model.obj');
+    log('Exported OBJ (baked pose)', 'success');
+  } catch (e) {
+    log(`OBJ export failed: ${e.message}`, 'error');
+  }
+  exportObjBtn.textContent = 'Export OBJ';
+  exportObjBtn.disabled = false;
+});
+
+// ─── Mesh List Panel ────────────────────────────────────────────────────────
+
+const meshListEl = document.getElementById('mesh-list');
+
+function populateMeshList() {
+  meshListEl.innerHTML = '';
+  if (loadedMeshes.length === 0) return;
+
+  for (let i = 0; i < loadedMeshes.length; i++) {
+    const mesh = loadedMeshes[i];
+    const label = loadedMeshLabels[i] || `mesh_${i}`;
+    const color = MESH_COLORS[i % MESH_COLORS.length];
+    const tris = mesh.geometry.index ? Math.floor(mesh.geometry.index.count / 3) : 0;
+
+    const row = document.createElement('div');
+    row.className = 'mesh-row';
+    row.dataset.idx = i;
+
+    const eye = document.createElement('span');
+    eye.className = 'mesh-eye on';
+    eye.textContent = '\u25C9';
+    eye.style.color = color;
+
+    const swatch = document.createElement('span');
+    swatch.className = 'mesh-color';
+    swatch.style.background = color;
+
+    const lbl = document.createElement('span');
+    lbl.className = 'mesh-label';
+    lbl.textContent = label;
+    lbl.title = label;
+
+    const tri = document.createElement('span');
+    tri.className = 'mesh-tris';
+    tri.textContent = `${tris.toLocaleString()} tri`;
+
+    row.appendChild(eye);
+    row.appendChild(swatch);
+    row.appendChild(lbl);
+    row.appendChild(tri);
+
+    row.addEventListener('click', () => {
+      const visible = !mesh.visible;
+      mesh.visible = visible;
+      eye.className = `mesh-eye ${visible ? 'on' : 'off'}`;
+      row.classList.toggle('hidden-mesh', !visible);
+    });
+
+    meshListEl.appendChild(row);
+  }
+}
+
+// ─── Bone List Panel ─────────────────────────────────────────────────────────
+
+const boneListEl = document.getElementById('bone-list');
+const boneCountEl = document.getElementById('bone-count');
+let boneListRows = new Map();
+
+function populateBoneList() {
+  boneListEl.innerHTML = '';
+  boneListRows.clear();
+  const bones = getAllBones();
+  if (bones.length === 0) { boneCountEl.textContent = ''; return; }
+  boneCountEl.textContent = `(${bones.length})`;
+
+  // Build parent depth for indentation
+  const depthMap = new Map();
+  for (const bone of bones) {
+    let depth = 0, p = bone.parent;
+    while (p && p.isBone) { depth++; p = p.parent; }
+    depthMap.set(bone, depth);
+  }
+
+  // Sort: tree order (parents before children, alphabetical within same parent)
+  const sorted = [...bones].sort((a, b) => {
+    const chainA = [], chainB = [];
+    let n = a; while (n) { chainA.unshift(n); n = n.parent && n.parent.isBone ? n.parent : null; }
+    n = b; while (n) { chainB.unshift(n); n = n.parent && n.parent.isBone ? n.parent : null; }
+    for (let i = 0; i < Math.min(chainA.length, chainB.length); i++) {
+      if (chainA[i] !== chainB[i]) return chainA[i].name.localeCompare(chainB[i].name);
+    }
+    return chainA.length - chainB.length;
+  });
+
+  for (const bone of sorted) {
+    const depth = depthMap.get(bone) || 0;
+    const row = document.createElement('div');
+    row.className = 'bone-row';
+
+    const indent = document.createElement('span');
+    indent.className = 'bone-indent';
+    indent.style.width = (depth * 12) + 'px';
+    indent.style.minWidth = (depth * 12) + 'px';
+
+    const icon = document.createElement('span');
+    icon.className = 'bone-icon';
+    icon.textContent = '\u00B7';
+
+    const lbl = document.createElement('span');
+    lbl.className = 'bone-name';
+    lbl.textContent = bone.name;
+    lbl.title = bone.name;
+
+    row.appendChild(indent);
+    row.appendChild(icon);
+    row.appendChild(lbl);
+
+    row.addEventListener('click', () => {
+      if (!skeletonVisible) {
+        skelBtn.click();
+      }
+      selectBone(bone);
+      highlightBoneRow(bone);
+    });
+
+    boneListEl.appendChild(row);
+    boneListRows.set(bone, row);
+  }
+}
+
+function highlightBoneRow(bone) {
+  for (const [, r] of boneListRows) r.classList.remove('selected');
+  if (bone && boneListRows.has(bone)) {
+    const row = boneListRows.get(bone);
+    row.classList.add('selected');
+    row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+// ─── Texture Application ────────────────────────────────────────────────────
+
+function loadTextureFromBuffer(data, filename) {
+  return new Promise((resolve, reject) => {
+    const ext = filename.split('.').pop().toLowerCase();
+    if (ext === 'tbody' || ext === 'dds') {
+      try {
+        const loader = new DDSLoader();
+        const tex = loader.parse(data);
+        const compTex = new THREE.CompressedTexture(
+          tex.mipmaps, tex.width, tex.height, tex.format
+        );
+        compTex.mipmaps = tex.mipmaps;
+        compTex.minFilter = tex.mipmapCount > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+        compTex.magFilter = THREE.LinearFilter;
+        compTex.needsUpdate = true;
+        compTex.flipY = false;
+        resolve(compTex);
+      } catch (e) {
+        reject(e);
+      }
+    } else {
+      const blob = new Blob([data]);
+      const url = URL.createObjectURL(blob);
+      const tex = new THREE.TextureLoader().load(url, () => {
+        URL.revokeObjectURL(url);
+        resolve(tex);
+      }, undefined, (err) => {
+        URL.revokeObjectURL(url);
+        reject(err);
+      });
+      tex.flipY = false;
+      tex.colorSpace = THREE.SRGBColorSpace;
+    }
+  });
+}
+
+async function applyTexturesToMeshes(textureFileMap, neededTextures) {
+  let applied = 0;
+  const isMtbBased = neededTextures.length > 0 && neededTextures[0].source === 'mtb';
+
+  if (isMtbBased) {
+    // MTB-based: distribute textures across meshes/materials by order
+    // For each material, the first matched texture is used as diffuse
+    const loadedTexObjs = new Map();
+    for (const needed of neededTextures) {
+      const hashName = needed.baseName.toLowerCase();
+      const hashNoExt = hashName.replace(/\.[^.]+$/, '');
+      for (const [fname, data] of textureFileMap) {
+        const candidateNoExt = fname.replace(/\.[^.]+$/, '');
+        if (candidateNoExt === hashNoExt || fname === hashName) {
+          try {
+            const tex = await loadTextureFromBuffer(data, fname);
+            loadedTexObjs.set(needed.hash || hashNoExt, tex);
+            log(`  Loaded DDS texture: ${fname}`, 'success');
+          } catch (e) {
+            log(`  Failed to load "${fname}": ${e.message}`, 'error');
+          }
+          break;
+        }
+      }
+    }
+
+    if (loadedTexObjs.size === 0) {
+      log('No .tbody textures could be matched. Filenames must be the hash (e.g. "51ea68bd3ca35a3d.tbody").', 'warn');
+      return;
+    }
+
+    // Apply first loaded texture as diffuse to each mesh
+    const texArr = [...loadedTexObjs.values()];
+    const numMats = loadedMaterials.length || 1;
+    const texPerMat = Math.max(1, Math.floor(texArr.length / numMats));
+
+    for (let mi = 0; mi < loadedMeshes.length; mi++) {
+      const matRef = loadedMeshMatRefs[mi];
+      const matIdx = matRef >= 0 ? matRef : 0;
+      const texIdx = Math.min(matIdx * texPerMat, texArr.length - 1);
+      const tex = texArr[texIdx];
+      if (!tex) continue;
+
+      const mesh = loadedMeshes[mi];
+      const oldMat = mesh.material;
+      mesh.material = new THREE.MeshStandardMaterial({
+        map: tex,
+        roughness: 0.7,
+        metalness: 0.1,
+        side: THREE.DoubleSide,
+        wireframe: wireframeOn
+      });
+      if (oldMat && !loadedMeshes.some((m, i) => i !== mi && m.material === oldMat)) {
+        oldMat.dispose();
+      }
+      applied++;
+      log(`  Applied texture ${texIdx} to mesh ${mi} (mat ${matIdx})`, 'success');
+    }
+  } else {
+    // TexturePool-based: match by filename
+    for (let mi = 0; mi < loadedMeshes.length; mi++) {
+      const matRef = loadedMeshMatRefs[mi];
+      if (matRef < 0 || matRef >= loadedMaterials.length) continue;
+      const mat = loadedMaterials[matRef];
+
+      for (const tRef of mat.textureRefs) {
+        if (tRef < 0 || tRef >= loadedTextures.length) continue;
+        const texEntry = loadedTextures[tRef];
+        const baseName = texEntry.fileName.replace(/\\/g, '/').split('/').pop().toLowerCase();
+        const baseNoExt = baseName.replace(/\.[^.]+$/, '');
+
+        let matchedData = null, matchedFname = '';
+        for (const [fname, data] of textureFileMap) {
+          const candidateNoExt = fname.replace(/\.[^.]+$/, '');
+          if (candidateNoExt === baseNoExt || fname === baseName) {
+            matchedData = data; matchedFname = fname;
+            break;
+          }
+        }
+
+        if (matchedData) {
+          try {
+            const tex = await loadTextureFromBuffer(matchedData, matchedFname);
+            const mesh = loadedMeshes[mi];
+            const oldMat = mesh.material;
+            mesh.material = new THREE.MeshStandardMaterial({
+              map: tex, roughness: 0.7, metalness: 0.1,
+              side: THREE.DoubleSide, wireframe: wireframeOn
+            });
+            if (oldMat && !loadedMeshes.some((m, i) => i !== mi && m.material === oldMat)) {
+              oldMat.dispose();
+            }
+            applied++;
+            log(`  Applied texture "${baseName}" to mesh ${mi}`, 'success');
+            break;
+          } catch (e) {
+            log(`  Failed to load texture "${baseName}": ${e.message}`, 'error');
+          }
+        }
+      }
+    }
+  }
+
+  if (applied === 0) {
+    log('No textures could be matched.', 'warn');
+  } else {
+    log(`Applied ${applied} texture(s)`, 'success');
+  }
+}
+
+function showTexturePrompt(neededTextures) {
+  const isMtb = neededTextures.length > 0 && neededTextures[0].source === 'mtb';
+  const hasColorInfo = neededTextures.some(t => t.isColor !== undefined);
+  const colorTextures = neededTextures.filter(t => t.isColor);
+  const otherTextures = neededTextures.filter(t => !t.isColor);
+
+  const container = document.createElement('div');
+  container.className = 'tex-prompt';
+
+  const title = document.createElement('div');
+  title.style.cssText = 'color:#e94560;font-weight:600;margin-bottom:4px';
+  title.textContent = `Model references ${neededTextures.length} texture(s)${isMtb ? ' (from MTB)' : ''}:`;
+  container.appendChild(title);
+
+  const list = document.createElement('div');
+  list.className = 'tex-list';
+  for (const t of neededTextures) {
+    const item = document.createElement('div');
+    if (hasColorInfo && t.isColor) {
+      item.innerHTML = `<span style="color:#4ade80">\u25CF</span> ${t.baseName} <span style="color:#4ade80;font-size:9px">(color)</span>`;
+    } else if (hasColorInfo) {
+      item.innerHTML = `<span style="color:#707090">\u25CB</span> ${t.baseName} <span style="color:#707090;font-size:9px">(normal/spec/etc)</span>`;
+    } else {
+      item.textContent = t.baseName;
+    }
+    list.appendChild(item);
+  }
+  container.appendChild(list);
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'color:#a0a0c0;font-size:10px;margin-bottom:6px';
+  if (isMtb) {
+    hint.textContent = 'Select the matching .tbody files (DDS format). Filenames are the hex hashes above.';
+  } else {
+    hint.textContent = 'Select matching image files (any format: PNG, JPG, TGA, DDS, .tbody, etc). Matched by base filename.';
+  }
+  container.appendChild(hint);
+
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.png,.jpg,.jpeg,.bmp,.tga,.dds,.tbody,.webp';
+  fileInput.multiple = true;
+  container.appendChild(fileInput);
+
+  // Shared handler for loading textures from the file input
+  async function handleFiles(filterColorOnly) {
+    if (!fileInput.files.length) return;
+    const targetTextures = filterColorOnly ? colorTextures : neededTextures;
+    allBtn.disabled = true;
+    if (colorBtn) colorBtn.disabled = true;
+    (filterColorOnly ? colorBtn : allBtn).textContent = 'Loading...';
+    const textureFileMap = new Map();
+    for (const f of fileInput.files) {
+      const data = await f.arrayBuffer();
+      textureFileMap.set(f.name.toLowerCase(), data);
+      log(`  Loaded file: ${f.name}`);
+    }
+    await applyTexturesToMeshes(textureFileMap, targetTextures);
+    allBtn.textContent = 'Done';
+    if (colorBtn) colorBtn.textContent = 'Done';
+  }
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center';
+
+  // "All Textures" button
+  const allBtn = document.createElement('button');
+  allBtn.textContent = isMtb ? 'Select All .tbody Files' : 'Select Texture Files';
+  let allColorOnly = false;
+  allBtn.addEventListener('click', () => { allColorOnly = false; fileInput.click(); });
+  btnRow.appendChild(allBtn);
+
+  // "Color Only" button (only shown when we have color classification)
+  let colorBtn = null;
+  if (hasColorInfo && colorTextures.length > 0 && otherTextures.length > 0) {
+    colorBtn = document.createElement('button');
+    colorBtn.textContent = `Color Only (${colorTextures.length})`;
+    colorBtn.style.cssText = 'background:#2d6a4f';
+    colorBtn.addEventListener('click', () => { allColorOnly = true; fileInput.click(); });
+    btnRow.appendChild(colorBtn);
+  }
+
+  container.appendChild(btnRow);
+
+  fileInput.addEventListener('change', () => handleFiles(allColorOnly));
+
+  logEl.appendChild(container);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ─── Clear Scene ────────────────────────────────────────────────────────────
+
+function clearScene() {
+  // Remove skeleton helpers
+  const helpers = [];
+  scene.traverse(obj => { if (obj.isSkeletonHelper) helpers.push(obj); });
+  for (const h of helpers) { h.dispose(); scene.remove(h); }
+
+  const toRemove = [];
+  scene.traverse(obj => { if (obj.isMesh || obj.isSkinnedMesh) toRemove.push(obj); });
+  for (const obj of toRemove) {
+    if (obj.isSkinnedMesh && obj.skeleton) obj.skeleton.dispose();
+    obj.geometry.dispose();
+    if (obj.material.map) obj.material.map.dispose();
+    obj.material.dispose();
+    scene.remove(obj);
+  }
+  for (const h of skeletonHelpers) { h.dispose(); scene.remove(h); }
+  skeletonHelpers = [];
+  skeletonVisible = false;
+  skelBtn.classList.remove('toggle-on');
+
+  deselectBone();
+  if (boneMarker) { scene.remove(boneMarker); boneMarker = null; }
+  if (boneTransformCtrl) { boneTransformCtrl.detach(); scene.remove(boneTransformCtrl); boneTransformCtrl.dispose(); boneTransformCtrl = null; }
+
+  loadedMeshes = [];
+  loadedMeshMatRefs = [];
+  loadedMeshLabels = [];
+  loadedMaterials = [];
+  loadedTextures = [];
+  meshListEl.innerHTML = '';
+  boneListEl.innerHTML = '';
+  boneListRows.clear();
+  boneCountEl.textContent = '';
+  exportGlbBtn.disabled = true;
+  exportObjBtn.disabled = true;
+}
+
+// ─── File Loading ───────────────────────────────────────────────────────────
+
+const octInput = document.getElementById('oct-file');
+const bufInput = document.getElementById('buf-files');
+const loadBtn = document.getElementById('btn-load');
+const loadTexCb = document.getElementById('load-textures');
+
+octInput.addEventListener('change', () => { loadBtn.disabled = !octInput.files.length; });
+
+loadBtn.addEventListener('click', async () => {
+  loadBtn.disabled = true;
+  logEl.innerHTML = '';
+  log('Loading OCT file...');
+
+  try {
+    const octBuf = await octInput.files[0].arrayBuffer();
+    log(`OCT file: ${octInput.files[0].name} (${octBuf.byteLength} bytes)`);
+
+    const companionFiles = {};
+    if (bufInput.files.length) {
+      for (const f of bufInput.files) {
+        companionFiles[f.name.toLowerCase()] = await f.arrayBuffer();
+        log(`  Companion: ${f.name} (${companionFiles[f.name.toLowerCase()].byteLength}B)`);
+      }
+    }
+
+    log('Parsing OCT binary...');
+    const root = parseOCT(octBuf);
+    log(`Root: key="${root.key}" children=${root.children.length}`, 'success');
+
+    for (const c of root.children) {
+      if (c.atomType === 1) log(`  Pool: ${c.key} (${c.children.length} children)`);
+    }
+
+    log('Building meshes...');
+    clearScene();
+    const result = buildMeshes(root, companionFiles);
+    const { meshes: newMeshes, meshMaterialRefs, meshLabels, totalVerts, totalTris, materials, textures, neededTextures, mtbData } = result;
+
+    loadedMeshes = newMeshes;
+    loadedMeshMatRefs = meshMaterialRefs;
+    loadedMeshLabels = meshLabels;
+    loadedMaterials = materials;
+    loadedTextures = textures;
+
+    for (const m of newMeshes) {
+      if (wireframeOn) m.material.wireframe = true;
+      scene.add(m);
+    }
+
+    populateMeshList();
+    populateBoneList();
+    exportGlbBtn.disabled = newMeshes.length === 0;
+    exportObjBtn.disabled = newMeshes.length === 0;
+
+    if (newMeshes.length > 0) {
+      const box = new THREE.Box3();
+      for (const m of newMeshes) box.expandByObject(m);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const dist = maxDim * 1.5;
+
+      controls.target.copy(center);
+      camera.position.set(center.x + dist * 0.5, center.y + dist * 0.5, center.z + dist);
+      camera.near = maxDim * 0.001;
+      camera.far = maxDim * 100;
+      camera.updateProjectionMatrix();
+      controls.update();
+
+      gridHelper.position.y = box.min.y;
+      const gridScale = Math.pow(10, Math.floor(Math.log10(maxDim)));
+      gridHelper.scale.setScalar(gridScale / 10);
+    }
+
+    document.getElementById('stat-verts').textContent = `Vertices: ${totalVerts.toLocaleString()}`;
+    document.getElementById('stat-tris').textContent = `Triangles: ${totalTris.toLocaleString()}`;
+    document.getElementById('stat-meshes').textContent = `Meshes: ${newMeshes.length}`;
+    document.getElementById('stat-mats').textContent = `Materials: ${materials.length}`;
+
+    log(`Done! ${newMeshes.length} meshes, ${totalVerts.toLocaleString()} verts, ${totalTris.toLocaleString()} tris`, 'success');
+
+    const skinnedMeshes = newMeshes.filter(m => m.isSkinnedMesh);
+    const uniqueSkeletons = new Set(skinnedMeshes.map(m => m.skeleton).filter(Boolean));
+    if (skinnedMeshes.length > 0) {
+      const boneCount = skinnedMeshes[0]?.skeleton?.bones?.length || 0;
+      log(`Skeleton: ${skinnedMeshes.length} skinned mesh(es), ${uniqueSkeletons.size} skeleton(s), ${boneCount} bones. Use Skeleton button to visualize. GLB export includes bones.`, 'success');
+    }
+
+    if (loadTexCb.checked && neededTextures.length > 0) {
+      showTexturePrompt(neededTextures);
+    } else if (neededTextures.length === 0 && !loadTexCb.checked) {
+      log('Texture loading disabled (checkbox unchecked).');
+    } else if (neededTextures.length === 0) {
+      log('No textures referenced by this model. If using MTB textures, add the .mtb file to the Buffers input.');
+    }
+  } catch (e) {
+    log(`Error: ${e.message}`, 'error');
+    console.error(e);
+  }
+
+  loadBtn.disabled = false;
+});
+</script>
+</body>
+</html>
